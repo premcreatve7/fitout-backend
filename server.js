@@ -307,7 +307,7 @@ app.post('/api/verify-payment', (req, res) => {
     res.json({ success: true, message: "+20 Credits Added!", credits: user ? user.credits : 20 });
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Production Server running smoothly on http://localhost:${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
