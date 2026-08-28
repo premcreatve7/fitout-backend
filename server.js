@@ -13,6 +13,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.get('/', (req, res) => {
+    res.status(200).send('FitOut AI Backend is Live and Running!');
+});
+
 const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -309,5 +313,5 @@ app.post('/api/verify-payment', (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server listening on 0.0.0.0:${PORT}`);
 });
