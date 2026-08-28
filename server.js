@@ -1,11 +1,11 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import Razorpay from 'razorpay';
-import dotenv from 'dotenv';
-import { fal } from '@fal-ai/client';
-import jwt from 'jsonwebtoken';
-import fs from 'fs';
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const Razorpay = require('razorpay');
+const dotenv = require('dotenv');
+const { fal } = require('@fal-ai/client');
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
 
 dotenv.config();
 
@@ -13,6 +13,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Render Health Check Route
 app.get('/', (req, res) => {
     res.status(200).send('FitOut AI Backend is Live and Running!');
 });
@@ -25,13 +26,17 @@ const upload = multer({ storage: multer.memoryStorage() });
 // ==========================================
 const DB_FILE = './database.json';
 
-// Initialize DB file if not exists
 if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], generations: [], transactions: [] }, null, 2));
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], generations: [], transactions: [] }, null, 2));
+    } catch (e) {
+        console.warn("DB init note:", e.message);
+    }
 }
 
 function readDB() {
     try {
+        if (!fs.existsSync(DB_FILE)) return { users: [], generations: [], transactions: [] };
         return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
     } catch {
         return { users: [], generations: [], transactions: [] };
@@ -39,15 +44,19 @@ function readDB() {
 }
 
 function writeDB(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    } catch (e) {
+        console.error("DB write error:", e.message);
+    }
 }
 
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_SECRET
+    key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
+    key_secret: process.env.RAZORPAY_SECRET || 'rzp_test_secret'
 });
 
-async function fetchImageAsBlob(url) {
+async function fetchImageAsBuffer(url) {
     const res = await fetch(url, {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -87,7 +96,7 @@ async function enhanceToUltraHD(imageUrl) {
 }
 
 // ==========================================
-// 👤 2. ROCK-SOLID AUTH & PROFILE
+// 👤 2. AUTH & PROFILE
 // ==========================================
 app.post('/api/auth/login', (req, res) => {
     try {
@@ -104,7 +113,7 @@ app.post('/api/auth/login', (req, res) => {
             user = {
                 id: 'usr_' + Date.now(),
                 identifier: cleanIdentifier,
-                credits: 0,
+                credits: 3, // New user gets 3 free credits
                 ads_watched: 0,
                 created_at: new Date().toISOString()
             };
@@ -143,7 +152,7 @@ app.get('/api/user/profile', (req, res) => {
             user,
             stats: {
                 totalGenerated: generations.length,
-                totalPaid: transactions.reduce((acc, curr) => acc + curr.amount, 0)
+                totalPaid: transactions.reduce((acc, curr) => acc + (curr.amount || 0), 0)
             },
             generations,
             transactions
@@ -229,7 +238,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
             const clothBlob = new Blob([files['clothImage'][0].buffer], { type: files['clothImage'][0].mimetype || 'image/jpeg' });
             rawGarmentUrl = await fal.storage.upload(clothBlob);
         } else if (clothImageUrl && clothImageUrl.trim() !== '') {
-            const downloadedCloth = await fetchImageAsBlob(clothImageUrl);
+            const downloadedCloth = await fetchImageAsBuffer(clothImageUrl);
             rawGarmentUrl = await fal.storage.upload(downloadedCloth);
         }
 
@@ -243,7 +252,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
                 garment_image_url: cleanedGarmentUrl,
                 preserve_background: true
             },
-            logs: true
+            logs: false
         });
 
         const rawResultUrl = result.data?.image?.url;
@@ -296,7 +305,7 @@ app.post('/api/verify-payment', (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.id === userId);
     if (user) {
-        user.credits += 20;
+        user.credits = (user.credits || 0) + 20;
         db.transactions.push({
             id: Date.now(),
             user_id: user.id,
@@ -311,6 +320,9 @@ app.post('/api/verify-payment', (req, res) => {
     res.json({ success: true, message: "+20 Credits Added!", credits: user ? user.credits : 20 });
 });
 
+// ==========================================
+// 🚀 6. SERVER BINDING FOR RENDER
+// ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on 0.0.0.0:${PORT}`);
