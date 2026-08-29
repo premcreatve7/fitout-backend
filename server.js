@@ -361,14 +361,20 @@ app.post('/api/tryon', async (req, res) => {
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
+        const { amount } = req.body; // paise mein aayega
         const options = {
-            amount: 9900,
+            amount: Number(amount) || 4900,
             currency: "INR",
-            receipt: "receipt_order_" + Date.now()
+            receipt: "receipt_" + Date.now()
         };
         const order = await razorpay.orders.create(options);
-        res.json({ success: true, order });
+        res.json({ 
+            success: true, 
+            order, 
+            key: process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder" 
+        });
     } catch (error) {
+        console.error("Razorpay Order Error:", error);
         res.status(500).json({ success: false, error: 'Failed to create payment order' });
     }
 });
