@@ -1,42 +1,43 @@
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const Razorpay = require('razorpay');
-const dotenv = require('dotenv');
-const { fal } = require('@fal-ai/client');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import Razorpay from 'razorpay';
+import dotenv from 'dotenv';
+import { fal } from '@fal-ai/client';
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// Render Health Check Route
-app.get('/', (req, res) => {
-    res.status(200).send('FitOut AI Backend is Live and Running!');
-});
+// ==========================================
+// 🌐 0. CORS & 50MB PAYLOAD CONFIGURATION
+// ==========================================
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ==========================================
 // 🗄️ 1. BULLETPROOF ZERO-DEPENDENCY DATABASE
 // ==========================================
 const DB_FILE = './database.json';
 
+// Initialize DB file if not exists
 if (!fs.existsSync(DB_FILE)) {
-    try {
-        fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], generations: [], transactions: [] }, null, 2));
-    } catch (e) {
-        console.warn("DB init note:", e.message);
-    }
+    fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], generations: [], transactions: [] }, null, 2));
 }
 
 function readDB() {
     try {
-        if (!fs.existsSync(DB_FILE)) return { users: [], generations: [], transactions: [] };
         return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
     } catch {
         return { users: [], generations: [], transactions: [] };
@@ -44,19 +45,22 @@ function readDB() {
 }
 
 function writeDB(data) {
-    try {
-        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-    } catch (e) {
-        console.error("DB write error:", e.message);
-    }
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
-    key_secret: process.env.RAZORPAY_SECRET || 'rzp_test_secret'
+    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder",
+    key_secret: process.env.RAZORPAY_SECRET || "rzp_secret_placeholder"
 });
 
-async function fetchImageAsBuffer(url) {
+// ==========================================
+// 🚀 2. HEALTH CHECK ROOT (For Cron & Ping)
+// ==========================================
+app.get('/', (req, res) => {
+    res.send('FitOut AI Backend is Live and Active 🚀');
+});
+
+async function fetchImageAsBlob(url) {
     const res = await fetch(url, {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -96,7 +100,7 @@ async function enhanceToUltraHD(imageUrl) {
 }
 
 // ==========================================
-// 👤 2. AUTH & PROFILE
+// 👤 3. ROCK-SOLID AUTH & PROFILE
 // ==========================================
 app.post('/api/auth/login', (req, res) => {
     try {
@@ -113,7 +117,7 @@ app.post('/api/auth/login', (req, res) => {
             user = {
                 id: 'usr_' + Date.now(),
                 identifier: cleanIdentifier,
-                credits: 3, // New user gets 3 free credits
+                credits: 5, // 5 Free Welcome Credits for new users
                 ads_watched: 0,
                 created_at: new Date().toISOString()
             };
@@ -152,7 +156,7 @@ app.get('/api/user/profile', (req, res) => {
             user,
             stats: {
                 totalGenerated: generations.length,
-                totalPaid: transactions.reduce((acc, curr) => acc + (curr.amount || 0), 0)
+                totalPaid: transactions.reduce((acc, curr) => acc + curr.amount, 0)
             },
             generations,
             transactions
@@ -163,7 +167,7 @@ app.get('/api/user/profile', (req, res) => {
 });
 
 // ==========================================
-// 📺 3. WATCH 5 ADS -> +1 CREDIT
+// 📺 4. WATCH 5 ADS -> +1 CREDIT
 // ==========================================
 app.post('/api/user/watch-ad', (req, res) => {
     const authHeader = req.headers.authorization;
@@ -201,8 +205,9 @@ app.post('/api/user/watch-ad', (req, res) => {
 });
 
 // ==========================================
-// 👗 4. TRY-ON PIPELINE
+// 👗 5. TRY-ON PIPELINE (MULTIPART & JSON)
 // ==========================================
+// Supports Multipart Upload as well as Direct Base64 / JSON Endpoints
 app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { name: 'clothImage', maxCount: 1 }]), async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ success: false, error: "Login required" });
@@ -238,7 +243,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
             const clothBlob = new Blob([files['clothImage'][0].buffer], { type: files['clothImage'][0].mimetype || 'image/jpeg' });
             rawGarmentUrl = await fal.storage.upload(clothBlob);
         } else if (clothImageUrl && clothImageUrl.trim() !== '') {
-            const downloadedCloth = await fetchImageAsBuffer(clothImageUrl);
+            const downloadedCloth = await fetchImageAsBlob(clothImageUrl);
             rawGarmentUrl = await fal.storage.upload(downloadedCloth);
         }
 
@@ -252,7 +257,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
                 garment_image_url: cleanedGarmentUrl,
                 preserve_background: true
             },
-            logs: false
+            logs: true
         });
 
         const rawResultUrl = result.data?.image?.url;
@@ -272,6 +277,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
         res.json({
             success: true,
             resultImageUrl: finalHdUrl,
+            resultImage: finalHdUrl,
             remainingCredits: user.credits
         });
 
@@ -281,8 +287,77 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
     }
 });
 
+// Dual endpoint compatibility for App.jsx (/api/tryon)
+app.post('/api/tryon', async (req, res) => {
+    console.log('===> Received /api/tryon request');
+    try {
+        const { personImage, clothingImage, clothingLink } = req.body;
+        if (!personImage) {
+            return res.status(400).json({ error: 'Person image is required' });
+        }
+
+        fal.config({ credentials: process.env.FAL_KEY });
+
+        // Upload Person image
+        let humanImageUrl = personImage;
+        if (personImage.startsWith('data:')) {
+            const base64Data = personImage.split(',')[1];
+            const mime = personImage.split(';')[0].split(':')[1];
+            const buffer = Buffer.from(base64Data, 'base64');
+            const blob = new Blob([buffer], { type: mime });
+            humanImageUrl = await fal.storage.upload(blob);
+        }
+
+        // Upload Garment image
+        let rawGarmentUrl = clothingImage || clothingLink;
+        if (clothingImage && clothingImage.startsWith('data:')) {
+            const base64Data = clothingImage.split(',')[1];
+            const mime = clothingImage.split(';')[0].split(':')[1];
+            const buffer = Buffer.from(base64Data, 'base64');
+            const blob = new Blob([buffer], { type: mime });
+            rawGarmentUrl = await fal.storage.upload(blob);
+        } else if (clothingLink && clothingLink.startsWith('http')) {
+            const downloadedCloth = await fetchImageAsBlob(clothingLink);
+            rawGarmentUrl = await fal.storage.upload(downloadedCloth);
+        }
+
+        if (!rawGarmentUrl) {
+            return res.status(400).json({ error: 'Outfit image or valid link is required' });
+        }
+
+        const cleanedGarmentUrl = await extractAndCleanGarment(rawGarmentUrl);
+
+        const result = await fal.subscribe("fal-ai/kling/v1-5/kolors-virtual-try-on", {
+            input: {
+                human_image_url: humanImageUrl,
+                garment_image_url: cleanedGarmentUrl,
+                preserve_background: true
+            },
+            logs: true
+        });
+
+        const rawResultUrl = result.data?.image?.url;
+        if (!rawResultUrl) throw new Error("Try-On Generation failed");
+
+        const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
+
+        return res.json({ 
+            success: true, 
+            resultImage: finalHdUrl,
+            resultImageUrl: finalHdUrl 
+        });
+
+    } catch (error) {
+        console.error('❌ /api/tryon Error:', error);
+        return res.status(500).json({ 
+            error: 'Failed to process AI Try-On', 
+            details: error.message 
+        });
+    }
+});
+
 // ==========================================
-// 💳 5. RAZORPAY PAYMENT
+// 💳 6. RAZORPAY PAYMENT
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
@@ -305,7 +380,7 @@ app.post('/api/verify-payment', (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.id === userId);
     if (user) {
-        user.credits = (user.credits || 0) + 20;
+        user.credits += 20;
         db.transactions.push({
             id: Date.now(),
             user_id: user.id,
@@ -321,9 +396,9 @@ app.post('/api/verify-payment', (req, res) => {
 });
 
 // ==========================================
-// 🚀 6. SERVER BINDING FOR RENDER
+// 🔌 7. PORT LISTENER (Render Dynamic Port Fix)
 // ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on 0.0.0.0:${PORT}`);
+    console.log(`✅ Server running smoothly on port ${PORT}`);
 });
