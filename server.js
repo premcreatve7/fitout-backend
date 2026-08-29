@@ -361,17 +361,17 @@ app.post('/api/tryon', async (req, res) => {
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
-        const { amount } = req.body; // paise mein aayega
+        const { amount } = req.body; // paise mein
         const options = {
             amount: Number(amount) || 4900,
             currency: "INR",
-            receipt: "receipt_" + Date.now()
+            receipt: "receipt_order_" + Date.now()
         };
         const order = await razorpay.orders.create(options);
         res.json({ 
             success: true, 
             order, 
-            key: process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder" 
+            key: process.env.RAZORPAY_KEY_ID || "rzp_test_TUSdX927htYDhm" 
         });
     } catch (error) {
         console.error("Razorpay Order Error:", error);
