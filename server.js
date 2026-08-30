@@ -251,19 +251,21 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
 
         const cleanedGarmentUrl = await extractAndCleanGarment(rawGarmentUrl);
 
-        const result = await fal.subscribe("fal-ai/kling/v1-5/kolors-virtual-try-on", {
-            input: {
-                human_image_url: humanImageUrl,
-                garment_image_url: cleanedGarmentUrl,
-                preserve_background: true
-            },
-            logs: true
-        });
+        const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+    input: {
+        model_image: humanImageUrl,
+        garment_image: cleanedGarmentUrl,
+        category: "auto",
+        mode: "quality",
+        garment_photo_type: "auto"
+    },
+    logs: true
+});
 
-        const rawResultUrl = result.data?.image?.url;
-        if (!rawResultUrl) throw new Error("Try-On Generation failed");
+const rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
+if (!rawResultUrl) throw new Error("FASHN Try-On Generation failed");
 
-        const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
+const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
 
         user.credits -= 1;
         db.generations.push({
