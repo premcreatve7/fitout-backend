@@ -291,70 +291,51 @@ const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
 
 // Dual endpoint compatibility for App.jsx (/api/tryon)
 app.post('/api/tryon', async (req, res) => {
-    console.log('===> Received /api/tryon request');
     try {
-        const { personImage, clothingImage, clothingLink } = req.body;
-        if (!personImage) {
-            return res.status(400).json({ error: 'Person image is required' });
+        const { personImage, clothingImage, isProUser } = req.body;
+
+        if (!personImage || !clothingImage) {
+            return res.status(400).json({ error: "दोनों फ़ोटो आवश्यक हैं।" });
         }
 
-        fal.config({ credentials: process.env.FAL_KEY });
+        const humanImageUrl = await uploadToFal(personImage);
+        const garmentImageUrl = await uploadToFal(clothingImage);
 
-        // Upload Person image
-        let humanImageUrl = personImage;
-        if (personImage.startsWith('data:')) {
-            const base64Data = personImage.split(',')[1];
-            const mime = personImage.split(';')[0].split(':')[1];
-            const buffer = Buffer.from(base64Data, 'base64');
-            const blob = new Blob([buffer], { type: mime });
-            humanImageUrl = await fal.storage.upload(blob);
+        let rawResultUrl = null;
+
+        if (isProUser) {
+            // 🌟 PRO TIER: FASHN v1.6 (Ultra-Realistic)
+            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+                input: {
+                    model_image: humanImageUrl,
+                    garment_image: garmentImageUrl,
+                    category: "auto",
+                    mode: "quality",
+                    garment_photo_type: "auto"
+                },
+                logs: true
+            });
+            rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
+        } else {
+            // ⚡ FREE / AD TIER: Fast Economical Model
+            const result = await fal.subscribe("fal-ai/kling/v1-5/kolors-virtual-try-on", {
+                input: {
+                    human_image_url: humanImageUrl,
+                    garment_image_url: garmentImageUrl,
+                    preserve_background: true
+                },
+                logs: true
+            });
+            rawResultUrl = result.data?.image?.url;
         }
 
-        // Upload Garment image
-        let rawGarmentUrl = clothingImage || clothingLink;
-        if (clothingImage && clothingImage.startsWith('data:')) {
-            const base64Data = clothingImage.split(',')[1];
-            const mime = clothingImage.split(';')[0].split(':')[1];
-            const buffer = Buffer.from(base64Data, 'base64');
-            const blob = new Blob([buffer], { type: mime });
-            rawGarmentUrl = await fal.storage.upload(blob);
-        } else if (clothingLink && clothingLink.startsWith('http')) {
-            const downloadedCloth = await fetchImageAsBlob(clothingLink);
-            rawGarmentUrl = await fal.storage.upload(downloadedCloth);
-        }
+        if (!rawResultUrl) throw new Error("Generation failed");
 
-        if (!rawGarmentUrl) {
-            return res.status(400).json({ error: 'Outfit image or valid link is required' });
-        }
-
-        const cleanedGarmentUrl = await extractAndCleanGarment(rawGarmentUrl);
-
-        const result = await fal.subscribe("fal-ai/kling/v1-5/kolors-virtual-try-on", {
-            input: {
-                human_image_url: humanImageUrl,
-                garment_image_url: cleanedGarmentUrl,
-                preserve_background: true
-            },
-            logs: true
-        });
-
-        const rawResultUrl = result.data?.image?.url;
-        if (!rawResultUrl) throw new Error("Try-On Generation failed");
-
-        const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
-
-        return res.json({ 
-            success: true, 
-            resultImage: finalHdUrl,
-            resultImageUrl: finalHdUrl 
-        });
+        res.json({ success: true, resultImageUrl: rawResultUrl });
 
     } catch (error) {
-        console.error('❌ /api/tryon Error:', error);
-        return res.status(500).json({ 
-            error: 'Failed to process AI Try-On', 
-            details: error.message 
-        });
+        console.error("TryOn Error:", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
