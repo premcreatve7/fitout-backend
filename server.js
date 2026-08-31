@@ -9,6 +9,11 @@ import fs from 'fs';
 
 dotenv.config();
 
+// FAL Key Configuration
+fal.config({
+    credentials: process.env.FAL_KEY
+});
+
 const app = express();
 
 // ==========================================
@@ -27,11 +32,10 @@ const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ==========================================
-// 🗄️ 1. BULLETPROOF ZERO-DEPENDENCY DATABASE
+// 🗄️ 1. ZERO-DEPENDENCY DATABASE
 // ==========================================
 const DB_FILE = './database.json';
 
-// Initialize DB file if not exists
 if (!fs.existsSync(DB_FILE)) {
     fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], generations: [], transactions: [] }, null, 2));
 }
@@ -49,16 +53,33 @@ function writeDB(data) {
 }
 
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder",
-    key_secret: process.env.RAZORPAY_SECRET || "rzp_secret_placeholder"
+    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_TUSdX927htYDhm",
+    key_secret: process.env.RAZORPAY_SECRET || "kaPOuPzkj8XhNV9SdUgZAmeA"
 });
 
 // ==========================================
-// 🚀 2. HEALTH CHECK ROOT (For Cron & Ping)
+// 🛠️ HELPER FUNCTIONS FOR FAL UPLOAD & AI
 // ==========================================
-app.get('/', (req, res) => {
-    res.send('FitOut AI Backend is Live and Active 🚀');
-});
+async function uploadToFal(imageInput) {
+    if (!imageInput) return null;
+    if (typeof imageInput === 'string' && imageInput.startsWith('http')) {
+        return imageInput;
+    }
+    
+    // Convert Base64 Data URL to Blob
+    let base64Data = imageInput;
+    let contentType = 'image/jpeg';
+    
+    if (imageInput.includes(';base64,')) {
+        const parts = imageInput.split(';base64,');
+        contentType = parts[0].split(':')[1] || 'image/jpeg';
+        base64Data = parts[1];
+    }
+    
+    const buffer = Buffer.from(base64Data, 'base64');
+    const blob = new Blob([buffer], { type: contentType });
+    return await fal.storage.upload(blob);
+}
 
 async function fetchImageAsBlob(url) {
     const res = await fetch(url, {
@@ -81,26 +102,20 @@ async function extractAndCleanGarment(rawImageUrl) {
         });
         if (cleanResult.data?.image?.url) return cleanResult.data.image.url;
     } catch (err) {
-        console.warn("⚠️ Isolation skipped:", err.message);
+        console.warn("⚠️ Garment isolation skipped:", err.message);
     }
     return rawImageUrl;
 }
 
-async function enhanceToUltraHD(imageUrl) {
-    try {
-        const enhancedResult = await fal.subscribe("fal-ai/ccsr", {
-            input: { image_url: imageUrl, scale: 2 },
-            logs: false
-        });
-        if (enhancedResult.data?.image?.url) return enhancedResult.data.image.url;
-    } catch (err) {
-        console.warn("⚠️ HD Upscale skipped:", err.message);
-    }
-    return imageUrl;
-}
+// ==========================================
+// 🚀 2. HEALTH CHECK ROOT
+// ==========================================
+app.get('/', (req, res) => {
+    res.send('FitOut AI Backend is Live and Active 🚀');
+});
 
 // ==========================================
-// 👤 3. ROCK-SOLID AUTH & PROFILE
+// 👤 3. AUTH & PROFILE
 // ==========================================
 app.post('/api/auth/login', (req, res) => {
     try {
@@ -117,15 +132,13 @@ app.post('/api/auth/login', (req, res) => {
             user = {
                 id: 'usr_' + Date.now(),
                 identifier: cleanIdentifier,
-                credits: 5, // 5 Free Welcome Credits for new users
+                credits: 5,
                 ads_watched: 0,
                 created_at: new Date().toISOString()
             };
             db.users.push(user);
             writeDB(db);
             console.log(`✨ New User Registered: ${cleanIdentifier}`);
-        } else {
-            console.log(`👤 User Logged In: ${cleanIdentifier}`);
         }
 
         const token = jwt.sign({ id: user.id, identifier: user.identifier }, JWT_SECRET, { expiresIn: '30d' });
@@ -156,7 +169,7 @@ app.get('/api/user/profile', (req, res) => {
             user,
             stats: {
                 totalGenerated: generations.length,
-                totalPaid: transactions.reduce((acc, curr) => acc + curr.amount, 0)
+                totalPaid: transactions.reduce((acc, curr) => acc + (curr.amount || 0), 0)
             },
             generations,
             transactions
@@ -167,7 +180,7 @@ app.get('/api/user/profile', (req, res) => {
 });
 
 // ==========================================
-// 📺 4. WATCH 5 ADS -> +1 CREDIT
+// 📺 4. WATCH 3 ADS -> +1 CREDIT
 // ==========================================
 app.post('/api/user/watch-ad', (req, res) => {
     const authHeader = req.headers.authorization;
@@ -184,7 +197,7 @@ app.post('/api/user/watch-ad', (req, res) => {
         user.ads_watched = (user.ads_watched || 0) + 1;
         let creditAdded = false;
 
-        if (user.ads_watched >= 5) {
+        if (user.ads_watched >= 3) {
             user.credits = (user.credits || 0) + 1;
             user.ads_watched = 0;
             creditAdded = true;
@@ -195,7 +208,7 @@ app.post('/api/user/watch-ad', (req, res) => {
         res.json({
             success: true,
             adsWatched: user.ads_watched,
-            remainingAdsNeeded: 5 - user.ads_watched,
+            remainingAdsNeeded: 3 - user.ads_watched,
             credits: user.credits,
             creditUnlocked: creditAdded
         });
@@ -205,35 +218,79 @@ app.post('/api/user/watch-ad', (req, res) => {
 });
 
 // ==========================================
-// 👗 5. TRY-ON PIPELINE (MULTIPART & JSON)
+// 👗 5. TRY-ON PIPELINE (DUAL ENGINE: KOLORS & FASHN)
 // ==========================================
-// Supports Multipart Upload as well as Direct Base64 / JSON Endpoints
-app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { name: 'clothImage', maxCount: 1 }]), async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ success: false, error: "Login required" });
-
-    let userId = null;
+app.post('/api/tryon', async (req, res) => {
     try {
-        const token = authHeader.split(' ')[1];
-        const decoded = jwt.verify(token, JWT_SECRET);
-        userId = decoded.id;
-    } catch (e) {
-        return res.status(401).json({ success: false, error: "Invalid session" });
-    }
+        const { personImage, clothingImage, isProUser } = req.body;
 
-    const db = readDB();
-    const user = db.users.find(u => u.id === userId);
-    if (!user || user.credits < 1) {
-        return res.status(403).json({ success: false, error: "No credits left", outOfCredits: true });
-    }
+        if (!personImage || !clothingImage) {
+            return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
+        }
 
+        // 1. Upload Base64/URLs to FAL Cloud Storage
+        console.log("⏳ Uploading input images to cloud...");
+        const humanImageUrl = await uploadToFal(personImage);
+        let garmentImageUrl = await uploadToFal(clothingImage);
+
+        // 2. Clean garment background for better precision
+        garmentImageUrl = await extractAndCleanGarment(garmentImageUrl);
+
+        let finalResultUrl = null;
+
+        if (isProUser) {
+            // 🌟 PRO TIER: FASHN v1.6
+            console.log("🚀 Running FASHN v1.6 (Pro Mode)...");
+            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+                input: {
+                    model_image: humanImageUrl,
+                    garment_image: garmentImageUrl,
+                    category: "auto",
+                    mode: "quality",
+                    garment_photo_type: "auto",
+                    nsfw_filter: true
+                },
+                logs: true
+            });
+            finalResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
+        } else {
+            // ⚡ STANDARD / FREE TIER: Fast Kolors Try-On
+            console.log("⚡ Running Kolors Virtual Try-On (Fast Mode)...");
+            const result = await fal.subscribe("fal-ai/kolors-virtual-try-on", {
+                input: {
+                    human_image_url: humanImageUrl,
+                    garment_image_url: garmentImageUrl
+                },
+                logs: true
+            });
+            finalResultUrl = result.data?.image?.url || result.data?.images?.[0]?.url;
+        }
+
+        if (!finalResultUrl) {
+            throw new Error("AI could not generate the try-on output image.");
+        }
+
+        console.log("✅ Try-On Generated Successfully:", finalResultUrl);
+        return res.json({ 
+            success: true, 
+            resultImageUrl: finalResultUrl,
+            resultImage: finalResultUrl 
+        });
+
+    } catch (error) {
+        console.error("❌ TryOn Server Error:", error);
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message || "Failed to process AI Try-On" 
+        });
+    }
+});
+
+// Multipart compatibility for FormData
+app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { name: 'clothImage', maxCount: 1 }]), async (req, res) => {
     try {
         const files = req.files;
-        const clothImageUrl = req.body.clothImageUrl;
-
         if (!files || !files['userImage']) return res.status(400).json({ success: false, error: 'User image is required' });
-
-        fal.config({ credentials: process.env.FAL_KEY });
 
         const humanBlob = new Blob([files['userImage'][0].buffer], { type: files['userImage'][0].mimetype || 'image/jpeg' });
         const humanImageUrl = await fal.storage.upload(humanBlob);
@@ -242,99 +299,30 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
         if (files['clothImage']) {
             const clothBlob = new Blob([files['clothImage'][0].buffer], { type: files['clothImage'][0].mimetype || 'image/jpeg' });
             rawGarmentUrl = await fal.storage.upload(clothBlob);
-        } else if (clothImageUrl && clothImageUrl.trim() !== '') {
-            const downloadedCloth = await fetchImageAsBlob(clothImageUrl);
+        } else if (req.body.clothImageUrl) {
+            const downloadedCloth = await fetchImageAsBlob(req.body.clothImageUrl);
             rawGarmentUrl = await fal.storage.upload(downloadedCloth);
         }
-
-        if (!rawGarmentUrl) return res.status(400).json({ success: false, error: 'Cloth image is required' });
 
         const cleanedGarmentUrl = await extractAndCleanGarment(rawGarmentUrl);
 
         const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-    input: {
-        model_image: humanImageUrl,
-        garment_image: cleanedGarmentUrl,
-        category: "auto",
-        mode: "quality",
-        garment_photo_type: "auto"
-    },
-    logs: true
-});
-
-const rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
-if (!rawResultUrl) throw new Error("FASHN Try-On Generation failed");
-
-const finalHdUrl = await enhanceToUltraHD(rawResultUrl);
-
-        user.credits -= 1;
-        db.generations.push({
-            id: Date.now(),
-            user_id: user.id,
-            image_url: finalHdUrl,
-            created_at: new Date().toISOString()
-        });
-        writeDB(db);
-
-        res.json({
-            success: true,
-            resultImageUrl: finalHdUrl,
-            resultImage: finalHdUrl,
-            remainingCredits: user.credits
+            input: {
+                model_image: humanImageUrl,
+                garment_image: cleanedGarmentUrl,
+                category: "auto",
+                mode: "quality",
+                garment_photo_type: "auto"
+            },
+            logs: true
         });
 
-    } catch (error) {
-        console.error("❌ TryOn Error:", error);
-        res.status(500).json({ success: false, error: 'Generation Failed', details: error.message });
-    }
-});
-
-// Dual endpoint compatibility for App.jsx (/api/tryon)
-app.post('/api/tryon', async (req, res) => {
-    try {
-        const { personImage, clothingImage, isProUser } = req.body;
-
-        if (!personImage || !clothingImage) {
-            return res.status(400).json({ error: "दोनों फ़ोटो आवश्यक हैं।" });
-        }
-
-        const humanImageUrl = await uploadToFal(personImage);
-        const garmentImageUrl = await uploadToFal(clothingImage);
-
-        let rawResultUrl = null;
-
-        if (isProUser) {
-            // 🌟 PRO TIER: FASHN v1.6 (Ultra-Realistic)
-            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-                input: {
-                    model_image: humanImageUrl,
-                    garment_image: garmentImageUrl,
-                    category: "auto",
-                    mode: "quality",
-                    garment_photo_type: "auto"
-                },
-                logs: true
-            });
-            rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
-        } else {
-            // ⚡ FREE / AD TIER: Fast Economical Model
-            const result = await fal.subscribe("fal-ai/kling/v1-5/kolors-virtual-try-on", {
-                input: {
-                    human_image_url: humanImageUrl,
-                    garment_image_url: garmentImageUrl,
-                    preserve_background: true
-                },
-                logs: true
-            });
-            rawResultUrl = result.data?.image?.url;
-        }
-
-        if (!rawResultUrl) throw new Error("Generation failed");
+        const rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
+        if (!rawResultUrl) throw new Error("FASHN Try-On Generation failed");
 
         res.json({ success: true, resultImageUrl: rawResultUrl });
-
     } catch (error) {
-        console.error("TryOn Error:", error);
+        console.error("❌ Generate Error:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -344,7 +332,7 @@ app.post('/api/tryon', async (req, res) => {
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
-        const { amount } = req.body; // paise mein
+        const { amount } = req.body;
         const options = {
             amount: Number(amount) || 4900,
             currency: "INR",
@@ -369,7 +357,7 @@ app.post('/api/verify-payment', (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.id === userId);
     if (user) {
-        user.credits += 20;
+        user.credits = (user.credits || 0) + 20;
         db.transactions.push({
             id: Date.now(),
             user_id: user.id,
@@ -385,7 +373,7 @@ app.post('/api/verify-payment', (req, res) => {
 });
 
 // ==========================================
-// 🔌 7. PORT LISTENER (Render Dynamic Port Fix)
+// 🔌 7. PORT LISTENER
 // ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
