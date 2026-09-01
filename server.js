@@ -261,8 +261,8 @@ const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
             console.log("⚡ Running Kolors Virtual Try-On (Fast Mode)...");
             const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
                 input: {
-                    human_image_url: humanImageUrl,
-                    garment_image_url: garmentImageUrl
+                    model_image: humanImageUrl,
+                    garment_image: garmentImageUrl
                 },
                 logs: true
             });
