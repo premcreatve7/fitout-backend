@@ -240,7 +240,7 @@ app.post('/api/tryon', async (req, res) => {
 
         if (isProUser) {
             // 🌟 PRO TIER: FASHN v1.6
-           console.log("⚡ Running Fast Try-On Mode...");
+            console.log("⚡ Running Fast Try-On Mode...");
 const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
     input: {
         model_image: humanImageUrl,
@@ -256,7 +256,7 @@ const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
         } else {
             // ⚡ STANDARD / FREE TIER: Fast Kolors Try-On
             console.log("⚡ Running Kolors Virtual Try-On (Fast Mode)...");
-            const result = await fal.subscribe("fal-ai/kolors-virtual-try-on", {
+            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
                 input: {
                     human_image_url: humanImageUrl,
                     garment_image_url: garmentImageUrl
