@@ -240,18 +240,18 @@ app.post('/api/tryon', async (req, res) => {
 
         if (isProUser) {
             // 🌟 PRO TIER: FASHN v1.6
-            console.log("🚀 Running FASHN v1.6 (Pro Mode)...");
-            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-                input: {
-                    model_image: humanImageUrl,
-                    garment_image: garmentImageUrl,
-                    category: "auto",
-                    mode: "quality",
-                    garment_photo_type: "auto",
-                    nsfw_filter: true
-                },
-                logs: true
-            });
+           console.log("⚡ Running Fast Try-On Mode...");
+const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+    input: {
+        model_image: humanImageUrl,
+        garment_image: garmentImageUrl,
+        category: "auto",
+        mode: "performance", // fast/speed mode के लिए
+        garment_photo_type: "auto",
+        nsfw_filter: true
+    },
+    logs: true
+});
             finalResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
         } else {
             // ⚡ STANDARD / FREE TIER: Fast Kolors Try-On
