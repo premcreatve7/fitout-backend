@@ -248,7 +248,7 @@ const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
     input: {
         model_image: humanImageUrl,
         garment_image: garmentImageUrl,
-        category: "auto",
+        category: "tops",
         mode: "performance",
         garment_photo_type: "auto",
         nsfw_filter: true
@@ -314,7 +314,7 @@ app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { n
             input: {
                 model_image: humanImageUrl,
                 garment_image: cleanedGarmentUrl,
-                category: "auto",
+                category: "tops",
                 mode: "quality",
                 garment_photo_type: "auto"
             },
