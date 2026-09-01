@@ -281,12 +281,13 @@ const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
         });
 
     } catch (error) {
-        console.error("❌ TryOn Server Error:", error);
-        return res.status(500).json({ 
-            success: false, 
-            error: error.message || "Failed to process AI Try-On" 
-        });
-    }
+    console.error("❌ TryOn Server Error:", error);
+    console.error("❌ Detailed Error:", JSON.stringify(error.body || error, null, 2));
+    return res.status(500).json({ 
+        success: false, 
+        error: error.message || "Failed to process AI Try-On" 
+    });
+}
 });
 
 // Multipart compatibility for FormData
