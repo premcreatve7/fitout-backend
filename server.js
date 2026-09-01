@@ -241,12 +241,15 @@ app.post('/api/tryon', async (req, res) => {
         if (isProUser) {
             // 🌟 PRO TIER: FASHN v1.6
             console.log("⚡ Running Fast Try-On Mode...");
+console.log("Model URL:", humanImageUrl);
+console.log("Garment URL:", garmentImageUrl);
+
 const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
     input: {
         model_image: humanImageUrl,
         garment_image: garmentImageUrl,
         category: "auto",
-        mode: "performance", // fast/speed mode के लिए
+        mode: "performance",
         garment_photo_type: "auto",
         nsfw_filter: true
     },
