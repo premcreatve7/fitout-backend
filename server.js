@@ -94,6 +94,23 @@ async function fetchImageAsBlob(url) {
     return new Blob([arrayBuffer], { type: contentType });
 }
 
+app.get('/api/proxy-image', async (req, res) => {
+    const imageUrl = req.query.url;
+    if (!imageUrl) return res.status(400).send('URL required');
+
+    try {
+        const blob = await fetchImageAsBlob(imageUrl);
+        const arrayBuffer = await blob.arrayBuffer();
+        
+        res.setHeader('Content-Type', blob.type || 'image/jpeg');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.send(Buffer.from(arrayBuffer));
+    } catch (err) {
+        console.error("Proxy error:", err.message);
+        res.status(500).send('Failed to fetch image');
+    }
+});
+
 async function extractAndCleanGarment(rawImageUrl) {
     try {
         const cleanResult = await fal.subscribe("fal-ai/birefnet", {
