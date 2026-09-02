@@ -95,13 +95,38 @@ async function fetchImageAsBlob(url) {
 }
 
 app.get('/api/proxy-image', async (req, res) => {
-    const imageUrl = req.query.url;
-    if (!imageUrl) return res.status(400).send('URL required');
+    let targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).send('URL required');
 
     try {
-        const blob = await fetchImageAsBlob(imageUrl);
+        // चेक करें कि क्या लिंक सीधा इमेज (.jpg, .png आदि) का है
+        const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
+
+        if (!isDirectImage) {
+            // अगर प्रोडक्ट पेज लिंक है, तो उसका HTML मँगवाकर og:image निकालें
+            const pageRes = await fetch(targetUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+            const html = await pageRes.text();
+
+            const ogMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
+                            html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:image["']/i) ||
+                            html.match(/<meta\s+name=["']twitter:image["']\s+content=["']([^"']+)["']/i);
+
+            if (ogMatch && ogMatch[1]) {
+                targetUrl = ogMatch[1];
+            } else {
+                return res.status(404).send('Image not found in page');
+            }
+        }
+
+        // अब असली इमेज फ़ाइल को Blob बनाकर भेजें
+        const blob = await fetchImageAsBlob(targetUrl);
         const arrayBuffer = await blob.arrayBuffer();
-        
+
         res.setHeader('Content-Type', blob.type || 'image/jpeg');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.send(Buffer.from(arrayBuffer));
