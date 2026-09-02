@@ -99,40 +99,64 @@ app.get('/api/proxy-image', async (req, res) => {
     if (!targetUrl) return res.status(400).send('URL required');
 
     try {
-        // चेक करें कि क्या लिंक सीधा इमेज (.jpg, .png आदि) का है
+        targetUrl = decodeURIComponent(targetUrl).trim();
+
+        // 1. अगर लिंक // से शुरू हो रहा हो तो https: जोड़ें
+        if (targetUrl.startsWith('//')) {
+            targetUrl = 'https:' + targetUrl;
+        }
+
         const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
         if (!isDirectImage) {
-            // अगर प्रोडक्ट पेज लिंक है, तो उसका HTML मँगवाकर og:image निकालें
             const pageRes = await fetch(targetUrl, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.google.com/'
                 }
             });
+
+            if (!pageRes.ok) throw new Error(`Product page fetch failed: ${pageRes.status}`);
+
             const html = await pageRes.text();
 
-            const ogMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
-                            html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:image["']/i) ||
-                            html.match(/<meta\s+name=["']twitter:image["']\s+content=["']([^"']+)["']/i);
+            const ogMatch = html.match(/<meta\s+(?:property|name)=["'](?:og:image|twitter:image)["']\s+content=["']([^"']+)["']/i) ||
+                            html.match(/<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
 
             if (ogMatch && ogMatch[1]) {
-                targetUrl = ogMatch[1];
+                targetUrl = ogMatch[1].trim();
+                if (targetUrl.startsWith('//')) {
+                    targetUrl = 'https:' + targetUrl;
+                }
             } else {
-                return res.status(404).send('Image not found in page');
+                return res.status(404).send('No preview image found on page');
             }
         }
 
-        // अब असली इमेज फ़ाइल को Blob बनाकर भेजें
-        const blob = await fetchImageAsBlob(targetUrl);
-        const arrayBuffer = await blob.arrayBuffer();
+        // 2. अब इमेज को सेफ हेडर के साथ फ़ेच करें
+        const imgRes = await fetch(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Referer': targetUrl.includes('flipkart') ? 'https://www.flipkart.com/' : (targetUrl.includes('myntra') ? 'https://www.myntra.com/' : 'https://www.google.com/')
+            }
+        });
 
-        res.setHeader('Content-Type', blob.type || 'image/jpeg');
+        if (!imgRes.ok) throw new Error(`External image fetch failed: ${imgRes.status}`);
+
+        const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+
+        const arrayBuffer = await imgRes.arrayBuffer();
         res.send(Buffer.from(arrayBuffer));
+
     } catch (err) {
         console.error("Proxy error:", err.message);
-        res.status(500).send('Failed to fetch image');
+        res.status(500).send(`Failed to fetch image: ${err.message}`);
     }
 });
 
