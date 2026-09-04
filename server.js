@@ -95,69 +95,49 @@ async function fetchImageAsBlob(url) {
 }
 
 app.get('/api/proxy-image', async (req, res) => {
-    let targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('URL required');
+  let targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send('URL required');
 
-    try {
-        targetUrl = decodeURIComponent(targetUrl).trim();
+  try {
+    targetUrl = decodeURIComponent(targetUrl).trim();
+    if (targetUrl.startsWith('//')) targetUrl = 'https:' + targetUrl;
 
-        // 1. अगर लिंक // से शुरू हो रहा हो तो https: जोड़ें
-        if (targetUrl.startsWith('//')) {
-            targetUrl = 'https:' + targetUrl;
-        }
+    const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-        const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
+    // अगर लिंक प्रोडक्ट वेबपेज का है (Flipkart / Myntra / Amazon)
+    if (!isDirectImage) {
+      const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+      const metaData = await metaRes.json();
 
-        if (!isDirectImage) {
-            const pageRes = await fetch(targetUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://www.google.com/'
-                }
-            });
-
-            if (!pageRes.ok) throw new Error(`Product page fetch failed: ${pageRes.status}`);
-
-            const html = await pageRes.text();
-
-            const ogMatch = html.match(/<meta\s+(?:property|name)=["'](?:og:image|twitter:image)["']\s+content=["']([^"']+)["']/i) ||
-                            html.match(/<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
-
-            if (ogMatch && ogMatch[1]) {
-                targetUrl = ogMatch[1].trim();
-                if (targetUrl.startsWith('//')) {
-                    targetUrl = 'https:' + targetUrl;
-                }
-            } else {
-                return res.status(404).send('No preview image found on page');
-            }
-        }
-
-        // 2. अब इमेज को सेफ हेडर के साथ फ़ेच करें
-        const imgRes = await fetch(targetUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Referer': targetUrl.includes('flipkart') ? 'https://www.flipkart.com/' : (targetUrl.includes('myntra') ? 'https://www.myntra.com/' : 'https://www.google.com/')
-            }
-        });
-
-        if (!imgRes.ok) throw new Error(`External image fetch failed: ${imgRes.status}`);
-
-        const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-
-        const arrayBuffer = await imgRes.arrayBuffer();
-        res.send(Buffer.from(arrayBuffer));
-
-    } catch (err) {
-        console.error("Proxy error:", err.message);
-        res.status(500).send(`Failed to fetch image: ${err.message}`);
+      if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+        targetUrl = metaData.data.image.url;
+      } else {
+        return res.status(404).send('Product preview image not found');
+      }
     }
+
+    // इमेज को बाइनरी में फेच करके फ्रंटएंड को भेजें
+    const imgRes = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+      }
+    });
+
+    if (!imgRes.ok) throw new Error(`CDN fetch failed: ${imgRes.status}`);
+
+    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+
+    const buffer = await imgRes.arrayBuffer();
+    res.send(Buffer.from(buffer));
+
+  } catch (err) {
+    console.error("Proxy error:", err.message);
+    res.status(500).send(`Proxy failure: ${err.message}`);
+  }
 });
 
 async function extractAndCleanGarment(rawImageUrl) {
