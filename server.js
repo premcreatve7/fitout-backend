@@ -104,51 +104,48 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
+    // अगर वेबपेज लिंक है
     if (!isDirectImage) {
-      // 1. Myntra के लिए: बिना पेज लोड किए डायरेक्ट CDN से इमेज निकालना
+      // 1. Myntra के लिए: Style ID निकाल कर Google Cache + Myntra Assets से सीधे इमेज लेना
       if (targetUrl.includes('myntra.com')) {
         const idMatch = targetUrl.match(/\/(\d+)(\/buy|\?|$)/);
         if (idMatch && idMatch[1]) {
           const styleId = idMatch[1];
-          // Myntra का पब्लिक अनब्लॉक्ड इमेज एंडपॉइंट
+          // Myntra का अनब्लॉक्ड क्लाउडिनरी CDN पाथ
           targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${styleId}/front.jpg`;
-          
-          // अगर front.jpg न हो तो Myntra का यूनिवर्सल इमेज फ़ॉलबैक
-          const testCheck = await fetch(targetUrl, { method: 'HEAD' });
-          if (!testCheck.ok) {
-            targetUrl = `https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/${styleId}/1.jpg`;
-          }
         } else {
-          return res.status(404).send('Invalid Myntra URL');
+          // अगर Style ID न मिले तो Google OpenSocial Cache के जरिए खींचें
+          targetUrl = `https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&refresh=2592000&url=${encodeURIComponent(req.query.url)}`;
         }
       } else {
-        // 2. Flipkart, Amazon, Meesho के लिए Microlink (जो 100% चल रहा है)
-        const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-        const metaData = await metaRes.json();
-
-        if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-          targetUrl = metaData.data.image.url;
-        } else {
-          return res.status(404).send('Product preview image not found');
+        // 2. Flipkart, Amazon, Meesho के लिए Microlink (जो सही चल रहा है)
+        try {
+          const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+          const metaData = await metaRes.json();
+          if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+            targetUrl = metaData.data.image.url;
+          }
+        } catch (e) {
+          console.warn("Microlink failed, using google fallback:", e.message);
         }
       }
     }
 
-    // डायरेक्ट इमेज को फेच और बाइनरी में स्ट्रीम करें
-    const imgRes = await fetch(targetUrl, {
+    // 3. इमेज को फेच करके बाइनरी में स्ट्रीम करें
+    let imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
       }
     });
 
-    if (!imgRes.ok) {
-      // अगर Myntra का डायरेक्ट पाथ 404 दे, तो सीधे Microlink का स्क्रीनशॉट भेजें
-      if (req.query.url.includes('myntra.com')) {
-        return res.redirect(`https://api.microlink.io?url=${encodeURIComponent(req.query.url)}&screenshot=true&embed=screenshot.url`);
-      }
-      throw new Error(`Image fetch failed: ${imgRes.status}`);
+    // अगर Myntra CDN डायरेक्ट 404/403 दे, तो Google Image Cache प्रॉक्सी से निकालें
+    if (!imgRes.ok && req.query.url.includes('myntra.com')) {
+      const fallbackUrl = `https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&refresh=2592000&url=${encodeURIComponent(req.query.url)}`;
+      imgRes = await fetch(fallbackUrl);
     }
+
+    if (!imgRes.ok) throw new Error(`Fetch failed with status: ${imgRes.status}`);
 
     const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
     res.setHeader('Content-Type', contentType);
