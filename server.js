@@ -104,30 +104,44 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-    // 1. अगर लिंक वेबपेज का है (Myntra, Flipkart, Amazon, Meesho)
+    // अगर लिंक प्रोडक्ट वेबपेज का है (Myntra / Flipkart / Amazon / Meesho)
     if (!isDirectImage) {
-      if (targetUrl.includes('myntra.com')) {
-        // Myntra के लिए Microlink का हेडलेस ब्राउज़र स्क्रीनशॉट/इमेज एक्सट्रैक्टर
-        const microUrl = `https://api.microlink.io?url=${encodeURIComponent(targetUrl)}&screenshot=true&meta=false&embed=screenshot.url`;
-        return res.redirect(microUrl);
-      }
+      // WhatsApp / Facebook crawler बनकर पेज हिट करें (Myntra इसे कभी ब्लॉक नहीं करता)
+      const pageRes = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
 
-      // Flipkart, Amazon, Meesho के लिए नॉर्मल मेटा एक्सट्रैक्टर
-      const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-      const metaData = await metaRes.json();
+      const html = await pageRes.text();
 
-      if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-        targetUrl = metaData.data.image.url;
+      // OpenGraph इमेज टैग ढूँढें
+      const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+                      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+                      html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+
+      if (ogMatch && ogMatch[1]) {
+        targetUrl = ogMatch[1].trim();
+        if (targetUrl.startsWith('//')) targetUrl = 'https:' + targetUrl;
       } else {
-        return res.status(404).send('Product preview image not found');
+        // अगर Myntra का JSON-LD डेटा हो तो उसमें से इमेज निकालें
+        const jsonLdMatch = html.match(/"image":\s*\[?"(https:[^"\],]+)/i);
+        if (jsonLdMatch && jsonLdMatch[1]) {
+          targetUrl = jsonLdMatch[1].trim();
+        } else {
+          return res.status(404).send('Product preview image not found');
+        }
       }
     }
 
-    // 2. डायरेक्ट इमेज को बाइनरी में स्ट्रीम करें
+    // डायरेक्ट इमेज को फेच और बाइनरी में स्ट्रीम करें
     const imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'Referer': targetUrl.includes('myntassets.com') ? 'https://www.myntra.com/' : 'https://www.google.com/'
       }
     });
 
