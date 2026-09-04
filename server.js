@@ -104,48 +104,53 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-    // अगर वेबपेज लिंक है
     if (!isDirectImage) {
-      // 1. Myntra के लिए: Style ID निकाल कर Google Cache + Myntra Assets से सीधे इमेज लेना
+      // 1. Myntra: अनब्लॉक्ड मोबाइल कैटलॉग API से डायरेक्ट CDN URL निकालना
       if (targetUrl.includes('myntra.com')) {
         const idMatch = targetUrl.match(/\/(\d+)(\/buy|\?|$)/);
         if (idMatch && idMatch[1]) {
           const styleId = idMatch[1];
-          // Myntra का अनब्लॉक्ड क्लाउडिनरी CDN पाथ
-          targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${styleId}/front.jpg`;
-        } else {
-          // अगर Style ID न मिले तो Google OpenSocial Cache के जरिए खींचें
-          targetUrl = `https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&refresh=2592000&url=${encodeURIComponent(req.query.url)}`;
+          const myntraApiUrl = `https://www.myntra.com/gateway/v2/product/${styleId}/related`;
+          
+          const apiRes = await fetch(myntraApiUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
+              'Accept': 'application/json',
+              'Referer': 'https://www.myntra.com/'
+            }
+          });
+
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            // Myntra के डेटा से असली इमेज URL प्राप्त करें
+            const realImg = data?.style?.media?.albums?.[0]?.images?.[0]?.imageURL ||
+                            data?.style?.images?.[0]?.src ||
+                            data?.data?.style?.media?.albums?.[0]?.images?.[0]?.imageURL;
+            if (realImg) {
+              targetUrl = realImg;
+            }
+          }
         }
       } else {
-        // 2. Flipkart, Amazon, Meesho के लिए Microlink (जो सही चल रहा है)
-        try {
-          const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-          const metaData = await metaRes.json();
-          if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-            targetUrl = metaData.data.image.url;
-          }
-        } catch (e) {
-          console.warn("Microlink failed, using google fallback:", e.message);
+        // 2. Flipkart, Amazon, Meesho के लिए Microlink
+        const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+        const metaData = await metaRes.json();
+        if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+          targetUrl = metaData.data.image.url;
         }
       }
     }
 
-    // 3. इमेज को फेच करके बाइनरी में स्ट्रीम करें
-    let imgRes = await fetch(targetUrl, {
+    // 3. बाइनरी इमेज स्ट्रीम
+    const imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'Referer': targetUrl.includes('myntassets.com') ? 'https://www.myntra.com/' : 'https://www.google.com/'
       }
     });
 
-    // अगर Myntra CDN डायरेक्ट 404/403 दे, तो Google Image Cache प्रॉक्सी से निकालें
-    if (!imgRes.ok && req.query.url.includes('myntra.com')) {
-      const fallbackUrl = `https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&refresh=2592000&url=${encodeURIComponent(req.query.url)}`;
-      imgRes = await fetch(fallbackUrl);
-    }
-
-    if (!imgRes.ok) throw new Error(`Fetch failed with status: ${imgRes.status}`);
+    if (!imgRes.ok) throw new Error(`Image stream failed: ${imgRes.status}`);
 
     const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
     res.setHeader('Content-Type', contentType);
