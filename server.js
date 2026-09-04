@@ -104,62 +104,30 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-    // अगर लिंक प्रोडक्ट पेज (Myntra / Flipkart / Amazon / Meesho) का है
+    // 1. अगर लिंक वेबपेज का है (Myntra, Flipkart, Amazon, Meesho)
     if (!isDirectImage) {
-
-      // 1. Myntra का मास्टर बाईपास (ऑफिशियल मोबाइल API गेटवे)
       if (targetUrl.includes('myntra.com')) {
-        const styleIdMatch = targetUrl.match(/\/(\d+)(\/buy|\?|$)/);
-        if (styleIdMatch && styleIdMatch[1]) {
-          const styleId = styleIdMatch[1];
-          try {
-            // Myntra की इन-ऐप API को हिट करें (यह Akamai से कभी ब्लॉक नहीं होती)
-            const apiRes = await fetch(`https://www.myntra.com/gateway/v2/product/${styleId}`, {
-              headers: {
-                'User-Agent': 'MyntraAndroid/20.24.1 (Linux; U; Android 13; en_IN; Mobile)',
-                'Accept': 'application/json',
-                'x-mynt-app': 'android'
-              }
-            });
+        // Myntra के लिए Microlink का हेडलेस ब्राउज़र स्क्रीनशॉट/इमेज एक्सट्रैक्टर
+        const microUrl = `https://api.microlink.io?url=${encodeURIComponent(targetUrl)}&screenshot=true&meta=false&embed=screenshot.url`;
+        return res.redirect(microUrl);
+      }
 
-            if (apiRes.ok) {
-              const pData = await apiRes.json();
-              // पहली मुख्य इमेज निकालें
-              const primaryImg = pData?.style?.media?.albums?.[0]?.images?.[0]?.imageURL;
-              if (primaryImg) {
-                targetUrl = primaryImg;
-              }
-            }
-          } catch (e) {
-            console.error("Myntra gateway api error:", e.message);
-          }
-        }
+      // Flipkart, Amazon, Meesho के लिए नॉर्मल मेटा एक्सट्रैक्टर
+      const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+      const metaData = await metaRes.json();
 
-        // अगर API से इमेज नहीं मिली तो सीधे Myntra CDN पाथ का इस्तेमाल करें
-        if (!targetUrl.startsWith('http') || targetUrl.includes('myntra.com/sarees') || targetUrl.includes('/buy')) {
-          const fallbackId = styleIdMatch ? styleIdMatch[1] : '';
-          targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${fallbackId}/front.jpg`;
-        }
-
+      if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+        targetUrl = metaData.data.image.url;
       } else {
-        // 2. Flipkart, Amazon, Meesho के लिए Microlink (जो बिल्कुल सही चल रहा है)
-        const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-        const metaData = await metaRes.json();
-
-        if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-          targetUrl = metaData.data.image.url;
-        } else {
-          return res.status(404).send('Product preview image not found');
-        }
+        return res.status(404).send('Product preview image not found');
       }
     }
 
-    // 3. डायरेक्ट इमेज को फेच और स्ट्रीम करें
+    // 2. डायरेक्ट इमेज को बाइनरी में स्ट्रीम करें
     const imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        'Referer': targetUrl.includes('myntassets.com') ? 'https://www.myntra.com/' : 'https://www.google.com/'
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
       }
     });
 
