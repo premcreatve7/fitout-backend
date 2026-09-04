@@ -104,23 +104,61 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-    // अगर लिंक प्रोडक्ट वेबपेज का है (Flipkart / Myntra / Amazon)
+    // अगर लिंक प्रोडक्ट वेबपेज का है (Myntra / Flipkart / Amazon / Meesho)
     if (!isDirectImage) {
-      const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-      const metaData = await metaRes.json();
+      // 1. Myntra का खास Akamai बायपास
+      if (targetUrl.includes('myntra.com')) {
+        try {
+          const myntraRes = await fetch(targetUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-IN,en;q=0.9'
+            }
+          });
+          const html = await myntraRes.text();
+          
+          const ogMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
+                          html.match(/"image":\s*\[?"([^"\],]+)/i);
 
-      if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-        targetUrl = metaData.data.image.url;
+          if (ogMatch && ogMatch[1]) {
+            targetUrl = ogMatch[1].trim();
+          } else {
+            // Fallback: URL से Style ID निकाल कर डायरेक्ट CDN इमेज तैयार करना
+            const styleIdMatch = targetUrl.match(/\/(\d+)\/buy/);
+            if (styleIdMatch && styleIdMatch[1]) {
+              targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${styleIdMatch[1]}/default.jpg`;
+            } else {
+              throw new Error('Myntra image not extractable');
+            }
+          }
+        } catch (myntraErr) {
+          console.warn("Myntra direct fetch failed, trying Microlink fallback:", myntraErr.message);
+          const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+          const metaData = await metaRes.json();
+          if (metaData?.data?.image?.url) {
+            targetUrl = metaData.data.image.url;
+          }
+        }
       } else {
-        return res.status(404).send('Product preview image not found');
+        // 2. Flipkart, Amazon, Meesho के लिए Microlink
+        const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
+        const metaData = await metaRes.json();
+
+        if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+          targetUrl = metaData.data.image.url;
+        } else {
+          return res.status(404).send('Product preview image not found');
+        }
       }
     }
 
-    // इमेज को बाइनरी में फेच करके फ्रंटएंड को भेजें
+    // 3. इमेज को फेच करके रिस्पॉन्स भेजना
     const imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'Referer': targetUrl.includes('myntassets.com') ? 'https://www.myntra.com/' : 'https://www.google.com/'
       }
     });
 
