@@ -104,44 +104,45 @@ app.get('/api/proxy-image', async (req, res) => {
 
     const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
 
-    // अगर लिंक प्रोडक्ट वेबपेज का है (Myntra / Flipkart / Amazon / Meesho)
+    // अगर लिंक प्रोडक्ट पेज (Myntra / Flipkart / Amazon / Meesho) का है
     if (!isDirectImage) {
-      // 1. Myntra का खास Akamai बायपास
-      if (targetUrl.includes('myntra.com')) {
-        try {
-          const myntraRes = await fetch(targetUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-IN,en;q=0.9'
-            }
-          });
-          const html = await myntraRes.text();
-          
-          const ogMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
-                          html.match(/"image":\s*\[?"([^"\],]+)/i);
 
-          if (ogMatch && ogMatch[1]) {
-            targetUrl = ogMatch[1].trim();
-          } else {
-            // Fallback: URL से Style ID निकाल कर डायरेक्ट CDN इमेज तैयार करना
-            const styleIdMatch = targetUrl.match(/\/(\d+)\/buy/);
-            if (styleIdMatch && styleIdMatch[1]) {
-              targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${styleIdMatch[1]}/default.jpg`;
-            } else {
-              throw new Error('Myntra image not extractable');
+      // 1. Myntra का मास्टर बाईपास (ऑफिशियल मोबाइल API गेटवे)
+      if (targetUrl.includes('myntra.com')) {
+        const styleIdMatch = targetUrl.match(/\/(\d+)(\/buy|\?|$)/);
+        if (styleIdMatch && styleIdMatch[1]) {
+          const styleId = styleIdMatch[1];
+          try {
+            // Myntra की इन-ऐप API को हिट करें (यह Akamai से कभी ब्लॉक नहीं होती)
+            const apiRes = await fetch(`https://www.myntra.com/gateway/v2/product/${styleId}`, {
+              headers: {
+                'User-Agent': 'MyntraAndroid/20.24.1 (Linux; U; Android 13; en_IN; Mobile)',
+                'Accept': 'application/json',
+                'x-mynt-app': 'android'
+              }
+            });
+
+            if (apiRes.ok) {
+              const pData = await apiRes.json();
+              // पहली मुख्य इमेज निकालें
+              const primaryImg = pData?.style?.media?.albums?.[0]?.images?.[0]?.imageURL;
+              if (primaryImg) {
+                targetUrl = primaryImg;
+              }
             }
-          }
-        } catch (myntraErr) {
-          console.warn("Myntra direct fetch failed, trying Microlink fallback:", myntraErr.message);
-          const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-          const metaData = await metaRes.json();
-          if (metaData?.data?.image?.url) {
-            targetUrl = metaData.data.image.url;
+          } catch (e) {
+            console.error("Myntra gateway api error:", e.message);
           }
         }
+
+        // अगर API से इमेज नहीं मिली तो सीधे Myntra CDN पाथ का इस्तेमाल करें
+        if (!targetUrl.startsWith('http') || targetUrl.includes('myntra.com/sarees') || targetUrl.includes('/buy')) {
+          const fallbackId = styleIdMatch ? styleIdMatch[1] : '';
+          targetUrl = `https://assets.myntassets.com/dpr_1.5,q_60,w_400,c_limit,fl_progressive/assets/images/${fallbackId}/front.jpg`;
+        }
+
       } else {
-        // 2. Flipkart, Amazon, Meesho के लिए Microlink
+        // 2. Flipkart, Amazon, Meesho के लिए Microlink (जो बिल्कुल सही चल रहा है)
         const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
         const metaData = await metaRes.json();
 
@@ -153,7 +154,7 @@ app.get('/api/proxy-image', async (req, res) => {
       }
     }
 
-    // 3. इमेज को फेच करके रिस्पॉन्स भेजना
+    // 3. डायरेक्ट इमेज को फेच और स्ट्रीम करें
     const imgRes = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
