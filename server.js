@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 import { fal } from '@fal-ai/client';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 dotenv.config();
 
@@ -66,7 +68,6 @@ async function uploadToFal(imageInput) {
         return imageInput;
     }
     
-    // Convert Base64 Data URL to Blob
     let base64Data = imageInput;
     let contentType = 'image/jpeg';
     
@@ -94,76 +95,105 @@ async function fetchImageAsBlob(url) {
     return new Blob([arrayBuffer], { type: contentType });
 }
 
-app.get('/api/proxy-image', async (req, res) => {
-  let targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send('URL required');
+// ======================================================================
+// 🛍️ 2. DUAL-ENGINE E-COMMERCE IMAGE EXTRACTOR (FLIPKART/MEESHO/AMAZON)
+// ======================================================================
+app.post('/api/extract-image', async (req, res) => {
+    let { url } = req.body;
+    if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
 
-  try {
-    targetUrl = decodeURIComponent(targetUrl).trim();
-    if (targetUrl.startsWith('//')) targetUrl = 'https:' + targetUrl;
+    try {
+        url = decodeURIComponent(url).trim();
+        if (url.startsWith('//')) url = 'https:' + url;
 
-    const isDirectImage = targetUrl.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i);
-
-    if (!isDirectImage) {
-      // 1. Myntra: अनब्लॉक्ड मोबाइल कैटलॉग API से डायरेक्ट CDN URL निकालना
-      if (targetUrl.includes('myntra.com')) {
-        const idMatch = targetUrl.match(/\/(\d+)(\/buy|\?|$)/);
-        if (idMatch && idMatch[1]) {
-          const styleId = idMatch[1];
-          const myntraApiUrl = `https://www.myntra.com/gateway/v2/product/${styleId}/related`;
-          
-          const apiRes = await fetch(myntraApiUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
-              'Accept': 'application/json',
-              'Referer': 'https://www.myntra.com/'
-            }
-          });
-
-          if (apiRes.ok) {
-            const data = await apiRes.json();
-            // Myntra के डेटा से असली इमेज URL प्राप्त करें
-            const realImg = data?.style?.media?.albums?.[0]?.images?.[0]?.imageURL ||
-                            data?.style?.images?.[0]?.src ||
-                            data?.data?.style?.media?.albums?.[0]?.images?.[0]?.imageURL;
-            if (realImg) {
-              targetUrl = realImg;
-            }
-          }
+        // 1. अगर सीधे इमेज URL (.jpg, .png, .webp आदि) है
+        if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
+            return res.json({ success: true, imageUrl: url });
         }
-      } else {
-        // 2. Flipkart, Amazon, Meesho के लिए Microlink
-        const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}`);
-        const metaData = await metaRes.json();
-        if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-          targetUrl = metaData.data.image.url;
+
+        let extractedImage = null;
+
+        // 2. इंजन A: चेरियो और एंटी-बॉट मोबाइल हेडर स्क्रैपर
+        try {
+            const scrapeRes = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cache-Control': 'no-cache'
+                },
+                timeout: 7000
+            });
+
+            const $ = cheerio.load(scrapeRes.data);
+
+            extractedImage = $('meta[property="og:image"]').attr('content') || 
+                             $('meta[name="twitter:image"]').attr('content') ||
+                             $('meta[property="og:image:secure_url"]').attr('content');
+
+            if (!extractedImage) {
+                extractedImage = $('img[src*="rukminim"]').attr('src') ||         // Flipkart CDN
+                                 $('img[src*="images.meesho.com"]').attr('src') ||   // Meesho CDN
+                                 $('img[src*="media-amazon.com"]').attr('src') ||   // Amazon CDN
+                                 $('#landingImage').attr('src') ||
+                                 $('img').first().attr('src');
+            }
+        } catch (scrapeErr) {
+            console.warn("Direct scraping blocked, falling back to Microlink API...");
         }
-      }
+
+        // 3. इंजन B: अगर स्क्रैपिंग ब्लॉक हो जाए तो Microlink API फॉलबैक
+        if (!extractedImage) {
+            const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
+            const metaData = await metaRes.json();
+            if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+                extractedImage = metaData.data.image.url;
+            }
+        }
+
+        if (extractedImage) {
+            if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
+            return res.json({ success: true, imageUrl: extractedImage });
+        }
+
+        return res.status(404).json({ success: false, message: 'Image not found' });
+
+    } catch (err) {
+        console.error("Extractor Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
     }
+});
 
-    // 3. बाइनरी इमेज स्ट्रीम
-    const imgRes = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        'Referer': targetUrl.includes('myntassets.com') ? 'https://www.myntra.com/' : 'https://www.google.com/'
-      }
-    });
+// Proxy Image Streaming Route
+app.get('/api/proxy-image', async (req, res) => {
+    let targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).send('URL required');
 
-    if (!imgRes.ok) throw new Error(`Image stream failed: ${imgRes.status}`);
+    try {
+        targetUrl = decodeURIComponent(targetUrl).trim();
+        if (targetUrl.startsWith('//')) targetUrl = 'https:' + targetUrl;
 
-    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+        const imgRes = await fetch(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+            }
+        });
 
-    const buffer = await imgRes.arrayBuffer();
-    res.send(Buffer.from(buffer));
+        if (!imgRes.ok) throw new Error(`Image stream failed: ${imgRes.status}`);
 
-  } catch (err) {
-    console.error("Proxy error:", err.message);
-    res.status(500).send(`Proxy failure: ${err.message}`);
-  }
+        const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+
+        const buffer = await imgRes.arrayBuffer();
+        res.send(Buffer.from(buffer));
+
+    } catch (err) {
+        console.error("Proxy error:", err.message);
+        res.status(500).send(`Proxy failure: ${err.message}`);
+    }
 });
 
 async function extractAndCleanGarment(rawImageUrl) {
@@ -180,14 +210,14 @@ async function extractAndCleanGarment(rawImageUrl) {
 }
 
 // ==========================================
-// 🚀 2. HEALTH CHECK ROOT
+// 🚀 3. HEALTH CHECK ROOT
 // ==========================================
 app.get('/', (req, res) => {
     res.send('FitOut AI Backend is Live and Active 🚀');
 });
 
 // ==========================================
-// 👤 3. AUTH & PROFILE
+// 👤 4. AUTH & PROFILE
 // ==========================================
 app.post('/api/auth/login', (req, res) => {
     try {
@@ -252,7 +282,7 @@ app.get('/api/user/profile', (req, res) => {
 });
 
 // ==========================================
-// 📺 4. WATCH 3 ADS -> +1 CREDIT
+// 📺 5. WATCH 3 ADS -> +1 CREDIT
 // ==========================================
 app.post('/api/user/watch-ad', (req, res) => {
     const authHeader = req.headers.authorization;
@@ -290,7 +320,7 @@ app.post('/api/user/watch-ad', (req, res) => {
 });
 
 // ==========================================
-// 👗 5. TRY-ON PIPELINE (DUAL ENGINE: KOLORS & FASHN)
+// 👗 6. TRY-ON PIPELINE (FASHN V1.6)
 // ==========================================
 app.post('/api/tryon', async (req, res) => {
     try {
@@ -300,46 +330,28 @@ app.post('/api/tryon', async (req, res) => {
             return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
         }
 
-        // 1. Upload Base64/URLs to FAL Cloud Storage
         console.log("⏳ Uploading input images to cloud...");
         const humanImageUrl = await uploadToFal(personImage);
         let garmentImageUrl = await uploadToFal(clothingImage);
 
-        // 2. Clean garment background for better precision
         garmentImageUrl = await extractAndCleanGarment(garmentImageUrl);
 
         let finalResultUrl = null;
 
-        if (isProUser) {
-            // 🌟 PRO TIER: FASHN v1.6
-            console.log("⚡ Running Fast Try-On Mode...");
-console.log("Model URL:", humanImageUrl);
-console.log("Garment URL:", garmentImageUrl);
+        console.log("⚡ Running Try-On Mode...");
+        const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+            input: {
+                model_image: humanImageUrl,
+                garment_image: garmentImageUrl,
+                category: "tops",
+                mode: isProUser ? "quality" : "performance",
+                garment_photo_type: "auto",
+                nsfw_filter: true
+            },
+            logs: true
+        });
 
-const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-    input: {
-        model_image: humanImageUrl,
-        garment_image: garmentImageUrl,
-        category: "tops",
-        mode: "performance",
-        garment_photo_type: "auto",
-        nsfw_filter: true
-    },
-    logs: true
-});
-            finalResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
-        } else {
-            // ⚡ STANDARD / FREE TIER: Fast Kolors Try-On
-            console.log("⚡ Running Kolors Virtual Try-On (Fast Mode)...");
-            const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-                input: {
-                    model_image: humanImageUrl,
-                    garment_image: garmentImageUrl
-                },
-                logs: true
-            });
-            finalResultUrl = result.data?.image?.url || result.data?.images?.[0]?.url;
-        }
+        finalResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
 
         if (!finalResultUrl) {
             throw new Error("AI could not generate the try-on output image.");
@@ -353,58 +365,16 @@ const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
         });
 
     } catch (error) {
-    console.error("❌ TryOn Server Error:", error);
-    console.error("❌ Detailed Error:", JSON.stringify(error.body || error, null, 2));
-    return res.status(500).json({ 
-        success: false, 
-        error: error.message || "Failed to process AI Try-On" 
-    });
-}
-});
-
-// Multipart compatibility for FormData
-app.post('/api/generate', upload.fields([{ name: 'userImage', maxCount: 1 }, { name: 'clothImage', maxCount: 1 }]), async (req, res) => {
-    try {
-        const files = req.files;
-        if (!files || !files['userImage']) return res.status(400).json({ success: false, error: 'User image is required' });
-
-        const humanBlob = new Blob([files['userImage'][0].buffer], { type: files['userImage'][0].mimetype || 'image/jpeg' });
-        const humanImageUrl = await fal.storage.upload(humanBlob);
-
-        let rawGarmentUrl = "";
-        if (files['clothImage']) {
-            const clothBlob = new Blob([files['clothImage'][0].buffer], { type: files['clothImage'][0].mimetype || 'image/jpeg' });
-            rawGarmentUrl = await fal.storage.upload(clothBlob);
-        } else if (req.body.clothImageUrl) {
-            const downloadedCloth = await fetchImageAsBlob(req.body.clothImageUrl);
-            rawGarmentUrl = await fal.storage.upload(downloadedCloth);
-        }
-
-        const cleanedGarmentUrl = await extractAndCleanGarment(rawGarmentUrl);
-
-        const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-            input: {
-                model_image: humanImageUrl,
-                garment_image: cleanedGarmentUrl,
-                category: "tops",
-                mode: "quality",
-                garment_photo_type: "auto"
-            },
-            logs: true
+        console.error("❌ TryOn Server Error:", error);
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message || "Failed to process AI Try-On" 
         });
-
-        const rawResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
-        if (!rawResultUrl) throw new Error("FASHN Try-On Generation failed");
-
-        res.json({ success: true, resultImageUrl: rawResultUrl });
-    } catch (error) {
-        console.error("❌ Generate Error:", error);
-        res.status(500).json({ success: false, error: error.message });
     }
 });
 
 // ==========================================
-// 💳 6. RAZORPAY PAYMENT
+// 💳 7. RAZORPAY PAYMENT
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
@@ -427,29 +397,31 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 app.post('/api/verify-payment', (req, res) => {
-    const { userId, paymentId, amount } = req.body;
-    if (!userId || !paymentId) return res.status(400).json({ success: false, error: "Invalid payment data" });
+    const { userId, paymentId, amount, credits } = req.body;
+    if (!paymentId) return res.status(400).json({ success: false, error: "Invalid payment data" });
 
+    const creditToAdd = Number(credits) || 10;
     const db = readDB();
-    const user = db.users.find(u => u.id === userId);
+    const user = db.users.find(u => u.id === userId || u.identifier === userId);
+    
     if (user) {
-        user.credits = (user.credits || 0) + 20;
+        user.credits = (user.credits || 0) + creditToAdd;
         db.transactions.push({
             id: Date.now(),
             user_id: user.id,
             payment_id: paymentId,
-            amount: amount || 99,
-            credits_added: 20,
+            amount: amount || 49,
+            credits_added: creditToAdd,
             created_at: new Date().toISOString()
         });
         writeDB(db);
     }
 
-    res.json({ success: true, message: "+20 Credits Added!", credits: user ? user.credits : 20 });
+    res.json({ success: true, message: `+${creditToAdd} Credits Added!`, credits: user ? user.credits : creditToAdd });
 });
 
 // ==========================================
-// 🔌 7. PORT LISTENER
+// 🔌 8. PORT LISTENER
 // ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
