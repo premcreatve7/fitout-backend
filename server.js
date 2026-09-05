@@ -102,20 +102,43 @@ app.post('/api/extract-image', async (req, res) => {
         url = decodeURIComponent(url).trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर सीधे इमेज URL है
+        // 1. अगर डायरेक्ट इमेज URL है तो सीधे बेस64 बनाओ
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
-            return res.json({ success: true, imageUrl: url });
+            try {
+                const directImg = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+                const b64 = Buffer.from(directImg.data, 'binary').toString('base64');
+                const mime = directImg.headers['content-type'] || 'image/jpeg';
+                return res.json({ success: true, imageUrl: `data:${mime};base64,${b64}` });
+            } catch {
+                return res.json({ success: true, imageUrl: url });
+            }
+        }
+
+        // 2. शॉर्ट लिंक्स (amzn.to, meesho.com/s/p/ आदि) का असली फाइनल URL निकालें
+        try {
+            const headRes = await axios.get(url, {
+                maxRedirects: 5,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                },
+                timeout: 5000
+            });
+            if (headRes.request?.res?.responseUrl) {
+                url = headRes.request.res.responseUrl;
+            }
+        } catch (e) {
+            // रीडायरेक्ट फेल होने पर ओरिजिनल URL से ही आगे बढ़ेंगे
         }
 
         const isValidProductImage = (img) => {
             if (!img || typeof img !== 'string') return false;
             const lower = img.toLowerCase();
-            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder'));
+            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder') || lower.includes('icon'));
         };
 
         let extractedImage = null;
 
-        // 2. मल्टी-प्रॉक्सी लेयर (Render के IP ब्लॉक को बायपास करने के लिए)
+        // 3. मल्टी-प्रॉक्सी इंजन
         const proxyUrls = [
             `https://corsproxy.io/?${encodeURIComponent(url)}`,
             `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -143,12 +166,12 @@ app.post('/api/extract-image', async (req, res) => {
 
                     const $ = cheerio.load(scrapeRes.data);
                     
-                    // OpenGraph / Twitter मेटा टैग्स
+                    // मेटा टैग्स चेक करें
                     let candidate = $('meta[property="og:image"]').attr('content') || 
                                    $('meta[name="twitter:image"]').attr('content') ||
                                    $('meta[property="og:image:secure_url"]').attr('content');
 
-                    // अगर मेटा टैग में सही इमेज नहीं मिली, तो CDN इमेजेस ढूँढें
+                    // अगर मेटा टैग न मिले तो मुख्य CDN इमेज ढूँढें
                     if (!candidate || !isValidProductImage(candidate)) {
                         $('img').each((_, el) => {
                             const src = $(el).attr('src') || $(el).attr('data-src');
@@ -159,7 +182,7 @@ app.post('/api/extract-image', async (req, res) => {
                                 src.includes('m.media-amazon.com')
                             )) {
                                 candidate = src;
-                                return false; // लूप रोकें
+                                return false;
                             }
                         });
                     }
@@ -170,14 +193,32 @@ app.post('/api/extract-image', async (req, res) => {
                     }
                 }
             } catch (proxyErr) {
-                // एक प्रॉक्सी फेल होने पर अगली प्रॉक्सी ट्राई करेगा
                 continue;
             }
         }
 
+        // 4. अगर इमेज मिल गई, तो उसे बेस64 में बदलें ताकि ऐप में रेफरर ब्लॉक न हो
         if (extractedImage) {
             if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
-            return res.json({ success: true, imageUrl: extractedImage });
+            
+            try {
+                const imgDownload = await axios.get(extractedImage, {
+                    responseType: 'arraybuffer',
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    timeout: 8000
+                });
+                const base64Data = Buffer.from(imgDownload.data, 'binary').toString('base64');
+                const mimeType = imgDownload.headers['content-type'] || 'image/jpeg';
+                return res.json({ 
+                    success: true, 
+                    imageUrl: `data:${mimeType};base64,${base64Data}` 
+                });
+            } catch (err) {
+                // अगर बेस64 डाउनलोड फेल हो तो ओरिजिनल URL भेज दें
+                return res.json({ success: true, imageUrl: extractedImage });
+            }
         }
 
         return res.status(404).json({ success: false, message: 'No valid product image found' });
