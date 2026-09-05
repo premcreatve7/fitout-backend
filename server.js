@@ -53,8 +53,6 @@ function writeDB(data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-
-
 // ==========================================
 // 🛠️ HELPER FUNCTIONS FOR FAL UPLOAD & AI
 // ==========================================
@@ -78,21 +76,37 @@ async function uploadToFal(imageInput) {
     return await fal.storage.upload(blob);
 }
 
-async function fetchImageAsBlob(url) {
-    const res = await fetch(url, {
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept': 'image/*,*/*'
-        }
-    });
-    if (!res.ok) throw new Error(`External image fetch failed: ${res.status}`);
-    const arrayBuffer = await res.arrayBuffer();
-    const contentType = res.headers.get('content-type') || 'image/jpeg';
-    return new Blob([arrayBuffer], { type: contentType });
+// ======================================================================
+// 🧠 SMART GARMENT CATEGORY AUTO-DETECTOR
+// ======================================================================
+function detectGarmentCategory(urlOrText, base64OrBuffer) {
+    const text = (urlOrText || '').toLowerCase();
+
+    // 1. अगर URL या नाम में नीचे पहनने वाले कपड़े हैं
+    const bottomKeywords = ['jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 'legging', 'lower', 'trackpant'];
+    if (bottomKeywords.some(k => text.includes(k)) && !text.includes('set') && !text.includes('suit')) {
+        return 'bottoms';
+    }
+
+    // 2. अगर पूरा सेट, ड्रेस, गाउन, मैक्सी, फ्रॉक या सूट है
+    const fullBodyKeywords = ['dress', 'frock', 'gown', 'jumpsuit', 'maxi', 'suit', 'kurta', 'kurti', 'co-ord', 'set', 'saree', 'lehenga', 'anarkali'];
+    if (fullBodyKeywords.some(k => text.includes(k))) {
+        return 'one-pieces';
+    }
+
+    // 3. अगर केवल टॉप है
+    const topKeywords = ['shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 'blazer', 'sweater', 'blouse', 'shrug'];
+    if (topKeywords.some(k => text.includes(k))) {
+        return 'tops';
+    }
+
+    // 4. डिफ़ॉल्ट: महिलाओं और सामान्य फैशन में पूरा सेट / ड्रेस अधिक होता है
+    // जब फुल मॉडल की फ़ोटो हो, तो 'one-pieces' रखने से पूरा लुक बदलता है
+    return 'one-pieces';
 }
 
 // ======================================================================
-// 🛍️ 2. DUAL-ENGINE E-COMMERCE IMAGE EXTRACTOR (FLIPKART/MEESHO/AMAZON)
+// 🛍️ 2. DUAL-ENGINE E-COMMERCE IMAGE EXTRACTOR
 // ======================================================================
 app.post('/api/extract-image', async (req, res) => {
     let { url } = req.body;
@@ -101,12 +115,10 @@ app.post('/api/extract-image', async (req, res) => {
     try {
         url = decodeURIComponent(url).trim();
 
-        // शेयर टेक्स्ट में से केवल शुद्ध URL निकालना
         const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
         if (urlMatch) url = urlMatch[0].trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर सीधे इमेज URL है
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i) || 
             url.includes('media-amazon.com/images') || 
             url.includes('rukminim') || 
@@ -127,7 +139,7 @@ app.post('/api/extract-image', async (req, res) => {
 
         let extractedImage = null;
 
-        // 2. MEESHO DIRECT RESOLVER (बिना किसी वेब स्क्रैपिंग के)
+        // Meesho
         const meeshoMatch = url.match(/\/p\/([a-zA-Z0-9]+)/i);
         if (url.includes('meesho.com') && meeshoMatch && meeshoMatch[1]) {
             try {
@@ -147,27 +159,22 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        // 3. AMAZON ASIN RESOLVER (Amazon प्रोडक्ट ID से डायरेक्ट हाई-रिज़ॉल्यूशन इमेज)
-        // Amazon लिंक्स में /dp/B0XXXXXXXX या /gp/product/B0XXXXXXXX होता है
+        // Amazon
         const asinMatch = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
         if (url.includes('amazon') && asinMatch && asinMatch[1]) {
             const asin = asinMatch[1];
-            // Amazon का डायरेक्ट CDN इमेज पैटर्न (हर ASIN का प्राइमरी थंबनेल)
             extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asin}.01.MAIN._SCRMZZZZZZ_.jpg`;
         }
 
-        // 4. FLIPKART & UNIVERSAL UNBLOCKER (Jina Reader API - 100% बायपास)
+        // Flipkart & Universal (Jina Reader)
         if (!extractedImage) {
             try {
-                // r.jina.ai एक फ्री हेडलैस रीडर है जो Cloudflare/Anti-bot को बायपास करके साफ मार्कडाउन/इमेजेस देता है
                 const jinaRes = await axios.get(`https://r.jina.ai/${url}`, {
                     headers: { 'X-Return-Format': 'markdown' },
                     timeout: 8000
                 });
                 
                 const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
-                
-                // मार्कडाउन में से पहली इमेज URL निकालना: ![alt](url)
                 const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
                 if (imgMatches && imgMatches.length > 0) {
                     for (const m of imgMatches) {
@@ -184,7 +191,7 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        // 5. फॉलबैक: Microlink API
+        // Fallback: Microlink
         if (!extractedImage) {
             try {
                 const microRes = await axios.get(`https://api.microlink.io/?url=${encodeURIComponent(url)}&filter=image`, {
@@ -196,7 +203,6 @@ app.post('/api/extract-image', async (req, res) => {
             } catch (e) {}
         }
 
-        // 6. इमेज को Base64 में कन्वर्ट करें
         if (extractedImage) {
             if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
             extractedImage = extractedImage.replace(/\\u002F/g, '/').replace(/\\/g, '');
@@ -257,19 +263,6 @@ app.get('/api/proxy-image', async (req, res) => {
         res.status(500).send(`Proxy failure: ${err.message}`);
     }
 });
-
-async function extractAndCleanGarment(rawImageUrl) {
-    try {
-        const cleanResult = await fal.subscribe("fal-ai/birefnet", {
-            input: { image_url: rawImageUrl },
-            logs: false
-        });
-        if (cleanResult.data?.image?.url) return cleanResult.data.image.url;
-    } catch (err) {
-        console.warn("⚠️ Garment isolation skipped:", err.message);
-    }
-    return rawImageUrl;
-}
 
 // ==========================================
 // 🚀 3. HEALTH CHECK ROOT
@@ -382,30 +375,35 @@ app.post('/api/user/watch-ad', (req, res) => {
 });
 
 // ==========================================
-// 👗 6. TRY-ON PIPELINE (FASHN V1.6)
+// 👗 6. TRY-ON PIPELINE (FASHN V1.6 AUTO-DETECTION)
 // ==========================================
 app.post('/api/tryon', async (req, res) => {
     try {
-        const { personImage, clothingImage, category, isProUser } = req.body;
+        const { personImage, clothingImage, clothingLink, category, isProUser } = req.body;
 
         if (!personImage || !clothingImage) {
             return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
         }
 
+        // 1. ऑटोमैटिक कैटेगरी चुनना
+        let targetCategory = category;
+        if (!targetCategory || targetCategory === 'tops' || targetCategory === 'auto') {
+            targetCategory = detectGarmentCategory(clothingLink || clothingImage, clothingImage);
+        }
+        console.log(`🎯 Auto-Detected Garment Category: [${targetCategory}]`);
+
         console.log("⏳ Uploading input images to cloud...");
         const humanImageUrl = await uploadToFal(personImage);
-        let garmentImageUrl = await uploadToFal(clothingImage);
-
-        garmentImageUrl = await extractAndCleanGarment(garmentImageUrl);
+        const garmentImageUrl = await uploadToFal(clothingImage);
 
         let finalResultUrl = null;
 
-        console.log("⚡ Running Try-On Mode...");
+        console.log(`⚡ Running FASHN v1.6 for Category: ${targetCategory}...`);
         const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
             input: {
                 model_image: humanImageUrl,
                 garment_image: garmentImageUrl,
-                category: category || "tops",
+                category: targetCategory, // 'one-pieces' for full sets/dresses, 'tops' for shirts, 'bottoms' for pants
                 mode: isProUser ? "quality" : "performance",
                 garment_photo_type: "auto",
                 nsfw_filter: true
@@ -423,7 +421,8 @@ app.post('/api/tryon', async (req, res) => {
         return res.json({ 
             success: true, 
             resultImageUrl: finalResultUrl,
-            resultImage: finalResultUrl 
+            resultImage: finalResultUrl,
+            appliedCategory: targetCategory
         });
 
     } catch (error) {
