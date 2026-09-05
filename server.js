@@ -106,91 +106,76 @@ app.post('/api/extract-image', async (req, res) => {
         url = decodeURIComponent(url).trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर डायरेक्ट इमेज URL है
+        // 1. अगर सीधे इमेज URL है
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
             return res.json({ success: true, imageUrl: url });
         }
 
-        let extractedImage = null;
-
         const isValidProductImage = (img) => {
             if (!img || typeof img !== 'string') return false;
             const lower = img.toLowerCase();
-            // ब्लॉक लिस्ट: लोगो, सुरक्षा पेजेस और SVG
-            if (lower.endsWith('.svg') || 
-                lower.includes('logo') || 
-                lower.includes('akamai') || 
-                lower.includes('captcha') || 
-                lower.includes('challenge') ||
-                lower.includes('placeholder')) {
-                return false;
-            }
-            return true;
+            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder'));
         };
 
-        // 2. इंजन A: Cheerio Scraping
-        try {
-            const scrapeRes = await axios.get(url, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Cache-Control': 'no-cache'
-                },
-                maxRedirects: 5,
-                timeout: 9000
-            });
+        let extractedImage = null;
 
-            const $ = cheerio.load(scrapeRes.data);
+        // 2. मल्टी-प्रॉक्सी लेयर (Render के IP ब्लॉक को बायपास करने के लिए)
+        const proxyUrls = [
+            `https://corsproxy.io/?${encodeURIComponent(url)}`,
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+            `https://api.microlink.io/?url=${encodeURIComponent(url)}&prerender=true&filter=image`
+        ];
 
-            // Schema.org JSON-LD (सबसे सुरक्षित तरीका)
-            $('script[type="application/ld+json"]').each((_, el) => {
-                try {
-                    const json = JSON.parse($(el).html());
-                    const img = json.image || (json['@graph'] && json['@graph'].find(item => item.image)?.image);
-                    if (img) {
-                        const candidate = Array.isArray(img) ? img[0] : (typeof img === 'object' ? img.url : img);
-                        if (isValidProductImage(candidate)) extractedImage = candidate;
-                    }
-                } catch (e) {}
-            });
-
-            // OpenGraph Meta
-            if (!extractedImage) {
-                const og = $('meta[property="og:image"]').attr('content') || 
-                           $('meta[name="twitter:image"]').attr('content');
-                if (isValidProductImage(og)) extractedImage = og;
-            }
-
-            // ई-कॉमर्स CDN इमेज टैग्स
-            if (!extractedImage) {
-                $('img').each((_, el) => {
-                    const src = $(el).attr('src') || $(el).attr('data-src');
-                    if (isValidProductImage(src) && (
-                        src.includes('rukminim') || 
-                        src.includes('images.meesho.com') || 
-                        src.includes('media-amazon.com')
-                    )) {
-                        extractedImage = src;
-                        return false; // लूप रोकें
-                    }
-                });
-            }
-        } catch (scrapeErr) {
-            console.warn("Direct scraping failed/blocked:", scrapeErr.message);
-        }
-
-        // 3. इंजन B: Microlink Fallback
-        if (!extractedImage) {
+        for (const proxyUrl of proxyUrls) {
             try {
-                const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}&filter=image`);
-                const metaData = await metaRes.json();
-                const fallbackImg = metaData?.data?.image?.url;
-                if (isValidProductImage(fallbackImg)) {
-                    extractedImage = fallbackImg;
+                if (proxyUrl.includes('microlink.io')) {
+                    const microRes = await fetch(proxyUrl);
+                    const microData = await microRes.json();
+                    const candidate = microData?.data?.image?.url;
+                    if (candidate && isValidProductImage(candidate)) {
+                        extractedImage = candidate;
+                        break;
+                    }
+                } else {
+                    const scrapeRes = await axios.get(proxyUrl, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                        },
+                        timeout: 7000
+                    });
+
+                    const $ = cheerio.load(scrapeRes.data);
+                    
+                    // OpenGraph / Twitter मेटा टैग्स
+                    let candidate = $('meta[property="og:image"]').attr('content') || 
+                                   $('meta[name="twitter:image"]').attr('content') ||
+                                   $('meta[property="og:image:secure_url"]').attr('content');
+
+                    // अगर मेटा टैग में सही इमेज नहीं मिली, तो CDN इमेजेस ढूँढें
+                    if (!candidate || !isValidProductImage(candidate)) {
+                        $('img').each((_, el) => {
+                            const src = $(el).attr('src') || $(el).attr('data-src');
+                            if (isValidProductImage(src) && (
+                                src.includes('images.meesho.com') || 
+                                src.includes('rukminim') || 
+                                src.includes('media-amazon.com') ||
+                                src.includes('m.media-amazon.com')
+                            )) {
+                                candidate = src;
+                                return false; // लूप रोकें
+                            }
+                        });
+                    }
+
+                    if (candidate && isValidProductImage(candidate)) {
+                        extractedImage = candidate;
+                        break;
+                    }
                 }
-            } catch (fallbackErr) {
-                console.warn("Microlink fallback error:", fallbackErr.message);
+            } catch (proxyErr) {
+                // एक प्रॉक्सी फेल होने पर अगली प्रॉक्सी ट्राई करेगा
+                continue;
             }
         }
 
