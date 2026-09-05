@@ -55,8 +55,8 @@ function writeDB(data) {
 }
 
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_TUSdX927htYDhm",
-    key_secret: process.env.RAZORPAY_SECRET || "kaPOuPzkj8XhNV9SdUgZAmeA"
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_SECRET
 });
 
 // ==========================================
@@ -388,7 +388,7 @@ app.post('/api/create-order', async (req, res) => {
         res.json({ 
             success: true, 
             order, 
-            key: process.env.RAZORPAY_KEY_ID || "rzp_test_TUSdX927htYDhm" 
+            key: process.env.RAZORPAY_KEY_ID  
         });
     } catch (error) {
         console.error("Razorpay Order Error:", error);
