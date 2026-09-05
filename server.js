@@ -101,92 +101,102 @@ app.post('/api/extract-image', async (req, res) => {
     try {
         url = decodeURIComponent(url).trim();
 
-        // शेयर मैसेज से शुद्ध URL निकालना
+        // शेयर टेक्स्ट में से केवल शुद्ध URL निकालना
         const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
         if (urlMatch) url = urlMatch[0].trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर डायरेक्ट इमेज URL है
-        if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i) || url.includes('rukminim') || url.includes('images.meesho.com')) {
+        // 1. अगर सीधे इमेज URL है
+        if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i) || 
+            url.includes('media-amazon.com/images') || 
+            url.includes('rukminim') || 
+            url.includes('images.meesho.com')) {
             try {
                 const directImg = await axios.get(url, { 
                     responseType: 'arraybuffer', 
-                    timeout: 6000,
-                    headers: { 'User-Agent': 'Mozilla/5.0' }
+                    timeout: 8000,
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
                 });
                 const b64 = Buffer.from(directImg.data, 'binary').toString('base64');
                 const mime = directImg.headers['content-type'] || 'image/jpeg';
                 return res.json({ success: true, imageUrl: `data:${mime};base64,${b64}` });
-            } catch {
+            } catch (err) {
                 return res.json({ success: true, imageUrl: url });
             }
         }
 
         let extractedImage = null;
 
-        // 2. MEESHO DIRECT HANDLER (बिना किसी प्रॉक्सी के 100% सक्सेस)
-        // Meesho URL फॉर्मेट: /p/31crir
+        // 2. MEESHO DIRECT RESOLVER (बिना किसी वेब स्क्रैपिंग के)
         const meeshoMatch = url.match(/\/p\/([a-zA-Z0-9]+)/i);
         if (url.includes('meesho.com') && meeshoMatch && meeshoMatch[1]) {
-            const productId = meeshoMatch[1];
             try {
-                const meeshoApiRes = await axios.get(`https://www.meesho.com/api/v1/products/${productId}`, {
+                const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json'
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                        'Accept': 'application/json, text/plain, */*',
+                        'Referer': 'https://www.meesho.com/'
                     },
-                    timeout: 5000
+                    timeout: 6000
                 });
-                const pData = meeshoApiRes.data;
-                if (pData && pData.images && pData.images.length > 0) {
-                    extractedImage = pData.images[0];
-                } else if (pData && pData.product_images && pData.product_images.length > 0) {
-                    extractedImage = pData.product_images[0].url;
-                }
+                const pData = meeshoRes.data;
+                if (pData?.images?.length > 0) extractedImage = pData.images[0];
+                else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
             } catch (mErr) {
-                // अगर API ब्लॉक भी हो तो आगे बढ़ेंगे
+                console.warn("Meesho API error:", mErr.message);
             }
         }
 
-        // 3. अगर Meesho डायरेक्ट से नहीं मिला तो Microlink या OpenGraph ट्राई करें
+        // 3. AMAZON ASIN RESOLVER (Amazon प्रोडक्ट ID से डायरेक्ट हाई-रिज़ॉल्यूशन इमेज)
+        // Amazon लिंक्स में /dp/B0XXXXXXXX या /gp/product/B0XXXXXXXX होता है
+        const asinMatch = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+        if (url.includes('amazon') && asinMatch && asinMatch[1]) {
+            const asin = asinMatch[1];
+            // Amazon का डायरेक्ट CDN इमेज पैटर्न (हर ASIN का प्राइमरी थंबनेल)
+            extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asin}.01.MAIN._SCRMZZZZZZ_.jpg`;
+        }
+
+        // 4. FLIPKART & UNIVERSAL UNBLOCKER (Jina Reader API - 100% बायपास)
+        if (!extractedImage) {
+            try {
+                // r.jina.ai एक फ्री हेडलैस रीडर है जो Cloudflare/Anti-bot को बायपास करके साफ मार्कडाउन/इमेजेस देता है
+                const jinaRes = await axios.get(`https://r.jina.ai/${url}`, {
+                    headers: { 'X-Return-Format': 'markdown' },
+                    timeout: 8000
+                });
+                
+                const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
+                
+                // मार्कडाउन में से पहली इमेज URL निकालना: ![alt](url)
+                const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
+                if (imgMatches && imgMatches.length > 0) {
+                    for (const m of imgMatches) {
+                        const singleUrl = m.match(/\((https?:\/\/[^\s\)]+)\)/)[1];
+                        const lower = singleUrl.toLowerCase();
+                        if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.includes('svg')) {
+                            extractedImage = singleUrl;
+                            break;
+                        }
+                    }
+                }
+            } catch (jinaErr) {
+                console.warn("Jina unblocker error:", jinaErr.message);
+            }
+        }
+
+        // 5. फॉलबैक: Microlink API
         if (!extractedImage) {
             try {
                 const microRes = await axios.get(`https://api.microlink.io/?url=${encodeURIComponent(url)}&filter=image`, {
-                    timeout: 6000
+                    timeout: 7000
                 });
                 if (microRes.data?.data?.image?.url) {
                     extractedImage = microRes.data.data.image.url;
                 }
-            } catch (e) {
-                // microlink failed
-            }
+            } catch (e) {}
         }
 
-        // 4. अगर अब भी न मिले तो Google Cache / JSDelivr प्रॉक्सी से HTML स्क्रैप करें
-        if (!extractedImage) {
-            try {
-                const scrapeRes = await axios.get(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, {
-                    timeout: 6000,
-                    headers: { 'User-Agent': 'Mozilla/5.0' }
-                });
-                const rawHtml = typeof scrapeRes.data === 'string' ? scrapeRes.data : JSON.stringify(scrapeRes.data);
-                const $ = cheerio.load(rawHtml);
-
-                extractedImage = $('meta[property="og:image"]').attr('content') || 
-                                 $('meta[name="twitter:image"]').attr('content');
-
-                if (!extractedImage) {
-                    const matches = rawHtml.match(/https:\/\/(images\.meesho\.com|rukminim\d?\.flixcart\.com)[^\s"'\\>]+/gi);
-                    if (matches && matches.length > 0) {
-                        extractedImage = matches[0];
-                    }
-                }
-            } catch (e) {
-                // allorigins failed
-            }
-        }
-
-        // 5. इमेज को Base64 में बदलो
+        // 6. इमेज को Base64 में कन्वर्ट करें
         if (extractedImage) {
             if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
             extractedImage = extractedImage.replace(/\\u002F/g, '/').replace(/\\/g, '');
@@ -194,8 +204,8 @@ app.post('/api/extract-image', async (req, res) => {
             try {
                 const imgDownload = await axios.get(extractedImage, {
                     responseType: 'arraybuffer',
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
-                    timeout: 6000
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    timeout: 8000
                 });
                 const base64Data = Buffer.from(imgDownload.data, 'binary').toString('base64');
                 const mimeType = imgDownload.headers['content-type'] || 'image/jpeg';
@@ -208,11 +218,11 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        return res.status(404).json({ success: false, message: 'Could not extract product image. Please paste image address directly.' });
+        return res.status(404).json({ success: false, message: 'Could not extract product image. Please paste image address directly or upload photo.' });
 
     } catch (err) {
         console.error("Extractor Error:", err.message);
-        return res.status(500).json({ success: false, message: 'Failed to process URL' });
+        return res.status(500).json({ success: false, message: 'Server error while processing URL' });
     }
 });
 
