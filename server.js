@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import Razorpay from 'razorpay';
 import dotenv from 'dotenv';
 import { fal } from '@fal-ai/client';
 import jwt from 'jsonwebtoken';
@@ -349,7 +348,7 @@ app.post('/api/user/watch-ad', (req, res) => {
 // ==========================================
 app.post('/api/tryon', async (req, res) => {
     try {
-        const { personImage, clothingImage, category, isProUser } = req.body; // 👈 category यहाँ रिसीव करें
+        const { personImage, clothingImage, category, isProUser } = req.body;
 
         if (!personImage || !clothingImage) {
             return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
@@ -368,7 +367,7 @@ app.post('/api/tryon', async (req, res) => {
             input: {
                 model_image: humanImageUrl,
                 garment_image: garmentImageUrl,
-                category: category || "tops", // 👈 अब यह फ्रंटएंड से आई डायनेमिक कैटेगरी लेगा ("tops", "bottoms", या "one-pieces")
+                category: category || "tops",
                 mode: isProUser ? "quality" : "performance",
                 garment_photo_type: "auto",
                 nsfw_filter: true
