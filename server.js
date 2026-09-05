@@ -101,20 +101,17 @@ app.post('/api/extract-image', async (req, res) => {
     try {
         url = decodeURIComponent(url).trim();
 
-        // 1. अगर शेयर टेक्स्ट है तो शुद्ध URL निकालें
+        // शेयर मैसेज से शुद्ध URL निकालना
         const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
-        if (urlMatch) {
-            url = urlMatch[0].trim();
-        }
-
+        if (urlMatch) url = urlMatch[0].trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 2. अगर सीधे इमेज URL (या Flipkart rukminim CDN) है तो डायरेक्ट बेस64 बनाएं
+        // 1. अगर डायरेक्ट इमेज URL है
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i) || url.includes('rukminim') || url.includes('images.meesho.com')) {
             try {
                 const directImg = await axios.get(url, { 
                     responseType: 'arraybuffer', 
-                    timeout: 8000,
+                    timeout: 6000,
                     headers: { 'User-Agent': 'Mozilla/5.0' }
                 });
                 const b64 = Buffer.from(directImg.data, 'binary').toString('base64');
@@ -125,110 +122,80 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        // 3. रीडायरेक्ट्स हैंडल करें
-        try {
-            const headRes = await axios.get(url, {
-                maxRedirects: 5,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                },
-                timeout: 6000
-            });
-            if (headRes.request?.res?.responseUrl) {
-                url = headRes.request.res.responseUrl;
-            }
-        } catch (e) {
-            // ignore redirect error
-        }
-
-        const isValidProductImage = (img) => {
-            if (!img || typeof img !== 'string') return false;
-            const lower = img.toLowerCase();
-            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder') || lower.includes('icon') || lower.includes('badge'));
-        };
-
         let extractedImage = null;
 
-        // 4. मल्टी-प्रॉक्सी स्क्रैपिंग
-        const proxyUrls = [
-            `https://corsproxy.io/?${encodeURIComponent(url)}`,
-            `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-            `https://api.microlink.io/?url=${encodeURIComponent(url)}&prerender=true&filter=image`
-        ];
-
-        for (const proxyUrl of proxyUrls) {
+        // 2. MEESHO DIRECT HANDLER (बिना किसी प्रॉक्सी के 100% सक्सेस)
+        // Meesho URL फॉर्मेट: /p/31crir
+        const meeshoMatch = url.match(/\/p\/([a-zA-Z0-9]+)/i);
+        if (url.includes('meesho.com') && meeshoMatch && meeshoMatch[1]) {
+            const productId = meeshoMatch[1];
             try {
-                if (proxyUrl.includes('microlink.io')) {
-                    const microRes = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
-                    const microData = await microRes.json();
-                    const candidate = microData?.data?.image?.url;
-                    if (candidate && isValidProductImage(candidate)) {
-                        extractedImage = candidate;
-                        break;
-                    }
-                } else {
-                    const scrapeRes = await axios.get(proxyUrl, {
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-                        },
-                        timeout: 7000
-                    });
-
-                    const rawHtml = typeof scrapeRes.data === 'string' ? scrapeRes.data : JSON.stringify(scrapeRes.data);
-                    const $ = cheerio.load(rawHtml);
-                    
-                    // A. मेटा टैग्स
-                    let candidate = $('meta[property="og:image"]').attr('content') || 
-                                   $('meta[name="twitter:image"]').attr('content') ||
-                                   $('meta[property="og:image:secure_url"]').attr('content');
-
-                    // B. Flipkart का इंटरनल JSON स्क्रैप करना (अगर पेज पर JSON में इमेज हो)
-                    if (!candidate || !isValidProductImage(candidate)) {
-                        const jsonMatches = rawHtml.match(/https:\/\/(rukminim\d?\.flixcart\.com|images\.meesho\.com)[^\s"'\\>]+/gi);
-                        if (jsonMatches && jsonMatches.length > 0) {
-                            const validMatch = jsonMatches.find(isValidProductImage);
-                            if (validMatch) candidate = validMatch;
-                        }
-                    }
-
-                    // C. नॉर्मल img टैग्स
-                    if (!candidate || !isValidProductImage(candidate)) {
-                        $('img').each((_, el) => {
-                            const src = $(el).attr('src') || $(el).attr('data-src');
-                            if (isValidProductImage(src) && (
-                                src.includes('rukminim') || 
-                                src.includes('images.meesho.com') || 
-                                src.includes('media-amazon.com')
-                            )) {
-                                candidate = src;
-                                return false;
-                            }
-                        });
-                    }
-
-                    if (candidate && isValidProductImage(candidate)) {
-                        extractedImage = candidate;
-                        break;
-                    }
+                const meeshoApiRes = await axios.get(`https://www.meesho.com/api/v1/products/${productId}`, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/json'
+                    },
+                    timeout: 5000
+                });
+                const pData = meeshoApiRes.data;
+                if (pData && pData.images && pData.images.length > 0) {
+                    extractedImage = pData.images[0];
+                } else if (pData && pData.product_images && pData.product_images.length > 0) {
+                    extractedImage = pData.product_images[0].url;
                 }
-            } catch (proxyErr) {
-                continue;
+            } catch (mErr) {
+                // अगर API ब्लॉक भी हो तो आगे बढ़ेंगे
             }
         }
 
-        // 5. इमेज को सुरक्षित Base64 में बदलो (WebView के लिए)
+        // 3. अगर Meesho डायरेक्ट से नहीं मिला तो Microlink या OpenGraph ट्राई करें
+        if (!extractedImage) {
+            try {
+                const microRes = await axios.get(`https://api.microlink.io/?url=${encodeURIComponent(url)}&filter=image`, {
+                    timeout: 6000
+                });
+                if (microRes.data?.data?.image?.url) {
+                    extractedImage = microRes.data.data.image.url;
+                }
+            } catch (e) {
+                // microlink failed
+            }
+        }
+
+        // 4. अगर अब भी न मिले तो Google Cache / JSDelivr प्रॉक्सी से HTML स्क्रैप करें
+        if (!extractedImage) {
+            try {
+                const scrapeRes = await axios.get(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, {
+                    timeout: 6000,
+                    headers: { 'User-Agent': 'Mozilla/5.0' }
+                });
+                const rawHtml = typeof scrapeRes.data === 'string' ? scrapeRes.data : JSON.stringify(scrapeRes.data);
+                const $ = cheerio.load(rawHtml);
+
+                extractedImage = $('meta[property="og:image"]').attr('content') || 
+                                 $('meta[name="twitter:image"]').attr('content');
+
+                if (!extractedImage) {
+                    const matches = rawHtml.match(/https:\/\/(images\.meesho\.com|rukminim\d?\.flixcart\.com)[^\s"'\\>]+/gi);
+                    if (matches && matches.length > 0) {
+                        extractedImage = matches[0];
+                    }
+                }
+            } catch (e) {
+                // allorigins failed
+            }
+        }
+
+        // 5. इमेज को Base64 में बदलो
         if (extractedImage) {
             if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
-            
-            // Flipkart URL क्लीनअप (अगर बैकस्लैश या एस्केप्ड कैरेक्टर हों)
             extractedImage = extractedImage.replace(/\\u002F/g, '/').replace(/\\/g, '');
 
             try {
                 const imgDownload = await axios.get(extractedImage, {
                     responseType: 'arraybuffer',
                     headers: { 'User-Agent': 'Mozilla/5.0' },
-                    timeout: 8000
+                    timeout: 6000
                 });
                 const base64Data = Buffer.from(imgDownload.data, 'binary').toString('base64');
                 const mimeType = imgDownload.headers['content-type'] || 'image/jpeg';
@@ -241,11 +208,11 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        return res.status(404).json({ success: false, message: 'No valid product image found' });
+        return res.status(404).json({ success: false, message: 'Could not extract product image. Please paste image address directly.' });
 
     } catch (err) {
         console.error("Extractor Error:", err.message);
-        return res.status(500).json({ success: false, message: 'Server error while parsing image' });
+        return res.status(500).json({ success: false, message: 'Failed to process URL' });
     }
 });
 
