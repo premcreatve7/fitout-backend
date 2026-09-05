@@ -106,48 +106,79 @@ app.post('/api/extract-image', async (req, res) => {
         url = decodeURIComponent(url).trim();
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर सीधे इमेज URL (.jpg, .png, .webp आदि) है
+        // 1. डायरेक्ट इमेज URL (.jpg, .png, .webp आदि)
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
             return res.json({ success: true, imageUrl: url });
         }
 
         let extractedImage = null;
 
-        // 2. इंजन A: चेरियो और एंटी-बॉट मोबाइल हेडर स्क्रैपर
+        // 2. इंजन A: Cheerio + Desktop/Mobile Hybrid Headers + JSON-LD
         try {
             const scrapeRes = await axios.get(url, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Cache-Control': 'no-cache'
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
                 },
-                timeout: 7000
+                maxRedirects: 5,
+                timeout: 9000
             });
 
             const $ = cheerio.load(scrapeRes.data);
 
+            // OpenGraph / Twitter Cards
             extractedImage = $('meta[property="og:image"]').attr('content') || 
                              $('meta[name="twitter:image"]').attr('content') ||
                              $('meta[property="og:image:secure_url"]').attr('content');
 
+            // Schema.org JSON-LD (Meesho / Flipkart के लिए आवश्यक)
+            if (!extractedImage || extractedImage.includes('captcha')) {
+                $('script[type="application/ld+json"]').each((_, el) => {
+                    try {
+                        const json = JSON.parse($(el).html());
+                        const img = json.image || (json['@graph'] && json['@graph'].find(item => item.image)?.image);
+                        if (img) {
+                            extractedImage = Array.isArray(img) ? img[0] : (typeof img === 'object' ? img.url : img);
+                        }
+                    } catch (e) {}
+                });
+            }
+
+            // Amazon dynamic images & CDNs
+            if (!extractedImage || extractedImage.includes('captcha')) {
+                const dynamicData = $('#landingImage').attr('data-a-dynamic-image');
+                if (dynamicData) {
+                    try {
+                        extractedImage = Object.keys(JSON.parse(dynamicData))[0];
+                    } catch (e) {}
+                }
+            }
+
+            // Fallback Selectors
             if (!extractedImage) {
-                extractedImage = $('img[src*="rukminim"]').attr('src') ||         // Flipkart CDN
-                                 $('img[src*="images.meesho.com"]').attr('src') ||   // Meesho CDN
-                                 $('img[src*="media-amazon.com"]').attr('src') ||   // Amazon CDN
-                                 $('#landingImage').attr('src') ||
-                                 $('img').first().attr('src');
+                extractedImage = $('#landingImage').attr('src') ||
+                                 $('img[src*="rukminim"]').attr('src') ||
+                                 $('img[src*="images.meesho.com"]').attr('src') ||
+                                 $('img[src*="media-amazon.com"]').attr('src') ||
+                                 $('img._396cs4').attr('src');
             }
         } catch (scrapeErr) {
-            console.warn("Direct scraping blocked, falling back to Microlink API...");
+            console.warn("Direct scraping failed, falling back to Microlink API:", scrapeErr.message);
         }
 
-        // 3. इंजन B: अगर स्क्रैपिंग ब्लॉक हो जाए तो Microlink API फॉलबैक
-        if (!extractedImage) {
-            const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
-            const metaData = await metaRes.json();
-            if (metaData?.status === 'success' && metaData?.data?.image?.url) {
-                extractedImage = metaData.data.image.url;
+        // 3. इंजन B: Microlink API फॉलबैक
+        if (!extractedImage || extractedImage.includes('captcha')) {
+            try {
+                const metaRes = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}&filter=image`);
+                const metaData = await metaRes.json();
+                if (metaData?.status === 'success' && metaData?.data?.image?.url) {
+                    extractedImage = metaData.data.image.url;
+                }
+            } catch (fallbackErr) {
+                console.warn("Microlink fallback failed:", fallbackErr.message);
             }
         }
 
