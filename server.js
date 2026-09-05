@@ -100,9 +100,16 @@ app.post('/api/extract-image', async (req, res) => {
 
     try {
         url = decodeURIComponent(url).trim();
+
+        // 1. अगर शेयर बटन से पूरा टेक्स्ट आया है, तो सिर्फ https URL छाँटें
+        const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
+        if (urlMatch) {
+            url = urlMatch[0].trim();
+        }
+
         if (url.startsWith('//')) url = 'https:' + url;
 
-        // 1. अगर डायरेक्ट इमेज URL है तो सीधे बेस64 बनाओ
+        // 2. अगर सीधे इमेज URL है तो बेस64 में बदलें
         if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
             try {
                 const directImg = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
@@ -114,31 +121,32 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        // 2. शॉर्ट लिंक्स (amzn.to, meesho.com/s/p/ आदि) का असली फाइनल URL निकालें
+        // 3. Meesho और Flipkart के रीडायरेक्ट/शॉर्ट लिंक्स रिज़ॉल्व करें
         try {
             const headRes = await axios.get(url, {
                 maxRedirects: 5,
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                 },
-                timeout: 5000
+                timeout: 7000
             });
             if (headRes.request?.res?.responseUrl) {
                 url = headRes.request.res.responseUrl;
             }
         } catch (e) {
-            // रीडायरेक्ट फेल होने पर ओरिजिनल URL से ही आगे बढ़ेंगे
+            // रीडायरेक्ट फेल होने पर ओरिजिनल URL से आगे बढ़ें
         }
 
         const isValidProductImage = (img) => {
             if (!img || typeof img !== 'string') return false;
             const lower = img.toLowerCase();
-            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder') || lower.includes('icon'));
+            return !(lower.endsWith('.svg') || lower.includes('logo') || lower.includes('akamai') || lower.includes('captcha') || lower.includes('placeholder') || lower.includes('icon') || lower.includes('badge'));
         };
 
         let extractedImage = null;
 
-        // 3. मल्टी-प्रॉक्सी इंजन
+        // 4. मल्टी-प्रॉक्सी इंजन
         const proxyUrls = [
             `https://corsproxy.io/?${encodeURIComponent(url)}`,
             `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -166,12 +174,10 @@ app.post('/api/extract-image', async (req, res) => {
 
                     const $ = cheerio.load(scrapeRes.data);
                     
-                    // मेटा टैग्स चेक करें
                     let candidate = $('meta[property="og:image"]').attr('content') || 
                                    $('meta[name="twitter:image"]').attr('content') ||
                                    $('meta[property="og:image:secure_url"]').attr('content');
 
-                    // अगर मेटा टैग न मिले तो मुख्य CDN इमेज ढूँढें
                     if (!candidate || !isValidProductImage(candidate)) {
                         $('img').each((_, el) => {
                             const src = $(el).attr('src') || $(el).attr('data-src');
@@ -197,7 +203,7 @@ app.post('/api/extract-image', async (req, res) => {
             }
         }
 
-        // 4. अगर इमेज मिल गई, तो उसे बेस64 में बदलें ताकि ऐप में रेफरर ब्लॉक न हो
+        // 5. इमेज को Base64 में कन्वर्ट करें ताकि WebView में ब्लॉक न हो
         if (extractedImage) {
             if (extractedImage.startsWith('//')) extractedImage = 'https:' + extractedImage;
             
@@ -216,7 +222,6 @@ app.post('/api/extract-image', async (req, res) => {
                     imageUrl: `data:${mimeType};base64,${base64Data}` 
                 });
             } catch (err) {
-                // अगर बेस64 डाउनलोड फेल हो तो ओरिजिनल URL भेज दें
                 return res.json({ success: true, imageUrl: extractedImage });
             }
         }
