@@ -54,10 +54,7 @@ function writeDB(data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_SECRET
-});
+
 
 // ==========================================
 // 🛠️ HELPER FUNCTIONS FOR FAL UPLOAD & AI
@@ -352,7 +349,7 @@ app.post('/api/user/watch-ad', (req, res) => {
 // ==========================================
 app.post('/api/tryon', async (req, res) => {
     try {
-        const { personImage, clothingImage, isProUser } = req.body;
+        const { personImage, clothingImage, category, isProUser } = req.body; // 👈 category यहाँ रिसीव करें
 
         if (!personImage || !clothingImage) {
             return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
@@ -371,7 +368,7 @@ app.post('/api/tryon', async (req, res) => {
             input: {
                 model_image: humanImageUrl,
                 garment_image: garmentImageUrl,
-                category: "tops",
+                category: category || "tops", // 👈 अब यह फ्रंटएंड से आई डायनेमिक कैटेगरी लेगा ("tops", "bottoms", या "one-pieces")
                 mode: isProUser ? "quality" : "performance",
                 garment_photo_type: "auto",
                 nsfw_filter: true
@@ -402,50 +399,20 @@ app.post('/api/tryon', async (req, res) => {
 });
 
 // ==========================================
-// 💳 7. RAZORPAY PAYMENT
+// 💳 7. GOOGLE PLAY BILLING (COMING SOON)
 // ==========================================
 app.post('/api/create-order', async (req, res) => {
-    try {
-        const { amount } = req.body;
-        const options = {
-            amount: Number(amount) || 4900,
-            currency: "INR",
-            receipt: "receipt_order_" + Date.now()
-        };
-        const order = await razorpay.orders.create(options);
-        res.json({ 
-            success: true, 
-            order, 
-            key: process.env.RAZORPAY_KEY_ID  
-        });
-    } catch (error) {
-        console.error("Razorpay Order Error:", error);
-        res.status(500).json({ success: false, error: 'Failed to create payment order' });
-    }
+    return res.status(400).json({ 
+        success: false, 
+        error: "Google Play In-App Billing is coming soon in the next update!" 
+    });
 });
 
 app.post('/api/verify-payment', (req, res) => {
-    const { userId, paymentId, amount, credits } = req.body;
-    if (!paymentId) return res.status(400).json({ success: false, error: "Invalid payment data" });
-
-    const creditToAdd = Number(credits) || 10;
-    const db = readDB();
-    const user = db.users.find(u => u.id === userId || u.identifier === userId);
-    
-    if (user) {
-        user.credits = (user.credits || 0) + creditToAdd;
-        db.transactions.push({
-            id: Date.now(),
-            user_id: user.id,
-            payment_id: paymentId,
-            amount: amount || 49,
-            credits_added: creditToAdd,
-            created_at: new Date().toISOString()
-        });
-        writeDB(db);
-    }
-
-    res.json({ success: true, message: `+${creditToAdd} Credits Added!`, credits: user ? user.credits : creditToAdd });
+    return res.status(400).json({ 
+        success: false, 
+        error: "Google Play In-App Billing is coming soon in the next update!" 
+    });
 });
 
 // ==========================================
