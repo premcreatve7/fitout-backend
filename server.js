@@ -34,140 +34,36 @@ const DB_FILE = './database.json';
 
 const INITIAL_CLOTHES = [
   {
-    id: 'hp_' + Date.now(),
-    title: 'Trendy Casual Wear',
-    category: 'tops', // Kapde ke hisaab se: 'tops', 'bottoms', ya 'one-pieces'
-    tag: 'Trending',
-    imageUrl: 'YAHAN_MYNTRA_IMAGE_KA_DIRECT_URL',
-    affiliateUrl: 'https://myntr.it/Lwr8S7y'
-  },
-  {
     id: 'hp_01',
-    title: 'Casual Outfit 01',
-    category: 'tops', // Shirt/T-Shirt/Top ke liye 'tops', Jeans ke liye 'bottoms', Dress/Kurti ke liye 'one-pieces'
+    title: 'Yellow Floral Top',
+    category: 'tops',
     tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/mDZR9vp'
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h73/ha5/16407570612254/-473Wx593H-461161841-yellow-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/tFndB6q'
   },
   {
     id: 'hp_02',
-    title: 'Casual Outfit 02',
+    title: 'Casual Printed Wear',
     category: 'tops',
     tag: 'Hot',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/0Z5igCk'
+    imageUrl: 'https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/productimage/2019/9/10/956f6d80-09df-44b3-b881-d826bb3eaaae1568112535637-1.jpg',
+    affiliateUrl: 'https://myntr.it/oCgMAHo'
   },
   {
     id: 'hp_03',
-    title: 'Trendy Wear 03',
+    title: 'Yellow Kurti / Tunic',
     category: 'tops',
-    tag: 'Best Seller',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/En2YTqx'
+    tag: 'Popular',
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/20200731/AjbB/5f2320517cdb8ca2cf88859d/-473Wx593H-461343341-yellow-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/iyyaADw'
   },
   {
     id: 'hp_04',
-    title: 'Casual Outfit 04',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/562xzLC'
-  },
-  {
-    id: 'hp_05',
-    title: 'Trendy Wear 05',
-    category: 'tops',
-    tag: 'Hot',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/buZlepb'
-  },
-  {
-    id: 'hp_06',
-    title: 'Casual Outfit 06',
-    category: 'tops',
-    tag: 'Popular',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/lzfjDaz'
-  },
-  {
-    id: 'hp_07',
-    title: 'Trendy Wear 07',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/U5A63xX'
-  },
-  {
-    id: 'hp_08',
-    title: 'Trendy Wear 08',
+    title: 'Classic White Shirt / Top',
     category: 'tops',
     tag: 'Best Seller',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/KLx0wf2'
-  },
-  {
-    id: 'hp_09',
-    title: 'Casual Outfit 09',
-    category: 'tops',
-    tag: 'Hot',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/skfnYuh'
-  },
-  {
-    id: 'hp_10',
-    title: 'Casual Outfit 10',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/G67c0ft'
-  },
-  {
-    id: 'hp_11',
-    title: 'Trendy Wear 11',
-    category: 'tops',
-    tag: 'Popular',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/7pM5sTD'
-  },
-  {
-    id: 'hp_12',
-    title: 'Trendy Wear 12',
-    category: 'tops',
-    tag: 'Hot',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/jJZoZ7X'
-  },
-  {
-    id: 'hp_13',
-    title: 'Casual Outfit 13',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/bBJuOJU'
-  },
-  {
-    id: 'hp_14',
-    title: 'Trendy Wear 14',
-    category: 'tops',
-    tag: 'Best Seller',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://ajiio.in/c8UkJzC'
-  },
-  {
-    id: 'hp_15',
-    title: 'Casual Outfit 15',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/WgbQtBN'
-  },
-  {
-    id: 'hp_16',
-    title: 'Casual Outfit 16',
-    category: 'tops',
-    tag: 'Hot',
-    imageUrl: 'YAHAN_IMAGE_LINK_PASTE_KAREIN',
-    affiliateUrl: 'https://myntr.it/bqYH88H'
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h07/hfa/14565431836702/-473Wx593H-441016995-white-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/x1YkKK0'
   }
 ];
 
