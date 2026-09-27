@@ -183,16 +183,36 @@ if (!fs.existsSync(DB_FILE)) {
 
 function readDB() {
   try {
-    const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-    if (!data.catalog) data.catalog = INITIAL_CLOTHES;
+    if (!fs.existsSync(DB_FILE)) {
+      const initialData = { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
+      writeDB(initialData);
+      return initialData;
+    }
+
+    const fileContent = fs.readFileSync(DB_FILE, 'utf-8').trim();
+    if (!fileContent) {
+      const initialData = { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
+      writeDB(initialData);
+      return initialData;
+    }
+
+    const data = JSON.parse(fileContent);
+    if (!data.catalog || data.catalog.length === 0) {
+      data.catalog = INITIAL_CLOTHES;
+      writeDB(data);
+    }
     return data;
-  } catch {
+  } catch (err) {
     return { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
   }
 }
 
 function writeDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error("DB Write Error:", e);
+  }
 }
 
 // ==========================================
