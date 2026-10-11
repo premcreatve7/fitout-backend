@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import dotenv from 'dotenv';
-import { fal } from '@fal-ai/client';
+import { Client } from "@gradio/client";
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import axios from 'axios';
@@ -372,48 +372,55 @@ app.post('/api/buy-credits', (req, res) => {
 });
 
 // ==========================================
-// 👗 6. TRY-ON PIPELINE (FASHN V1.6 FOR ALL)
+// 👗 6. TRY-ON PIPELINE (FREE HUGGING FACE IDM-VTON)
 // ==========================================
 app.post('/api/tryon', async (req, res) => {
   try {
     const { personImage, clothingImage, clothingLink, category } = req.body;
 
     if (!personImage || !clothingImage) {
-      return res.status(400).json({ success: false, error: "Both User Photo and Cloth Image are required." });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Both User Photo and Cloth Image are required." 
+      });
     }
 
-    let targetCategory = category;
-    if (!targetCategory || targetCategory === 'auto') {
-      targetCategory = detectGarmentCategory(clothingLink || clothingImage);
-    }
+    console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
 
-    const humanImageUrl = await uploadToFal(personImage);
-    const garmentImageUrl = await uploadToFal(clothingImage);
-
-    // Free/Ad aur Paid sabhi ke liye FASHN 1.6 HD model
-    const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-      input: {
-        model_image: humanImageUrl,
-        garment_image: garmentImageUrl,
-        category: targetCategory,
-        mode: "quality",
-        garment_photo_type: "auto",
-        nsfw_filter: true
-      }
+    // Hugging Face Space se connect karein using token
+    const hfClient = await Client.connect("yisol/IDM-VTON", {
+      hf_token: process.env.HF_TOKEN
     });
 
-    const finalResultUrl = result.data?.images?.[0]?.url || result.data?.image?.url;
-    if (!finalResultUrl) throw new Error("AI returned empty result");
+    // Prediction call karein
+    const result = await hfClient.predict("/tryon", [
+      { background: personImage },   // User image (URL ya base64)
+      clothingImage,                 // Garment image
+      "Virtual try-on outfit",       // Description prompt
+      true,                          // is_checked (crop)
+      true,                          // is_checked_crop
+      30,                            // denoise steps
+      42                             // seed
+    ]);
+
+    const finalResultUrl = result.data?.[0]?.url || result.data?.[0];
+
+    if (!finalResultUrl) {
+      throw new Error("AI returned empty result from Hugging Face");
+    }
 
     return res.json({ 
       success: true, 
       resultImageUrl: finalResultUrl,
-      appliedCategory: targetCategory
+      appliedCategory: category || "tops"
     });
 
   } catch (error) {
     console.error("TryOn Error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to process AI Try-On" });
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || "Failed to process AI Try-On" 
+    });
   }
 });
 
