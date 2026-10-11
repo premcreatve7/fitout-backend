@@ -9,9 +9,7 @@ import axios from 'axios';
 
 dotenv.config();
 
-fal.config({
-  credentials: process.env.FAL_KEY
-});
+
 
 const app = express();
 
