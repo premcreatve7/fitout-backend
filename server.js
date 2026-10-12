@@ -484,7 +484,9 @@ const hfClient = await Client.connect("yisol/IDM-VTON", {
 // ==========================================
 // 🔌 7. PORT LISTENER
 // ==========================================
-const PORT = process.env.PORT || 10000;
+// Dynamic port (Render PORT environment variable use karega)
+const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ FitOut AI Backend running on port ${PORT}`);
 });
