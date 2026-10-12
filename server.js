@@ -434,9 +434,9 @@ app.post('/api/tryon', async (req, res) => {
 
    console.log("HF Token status:", process.env.HF_TOKEN ? "Loaded successfully" : "UNDEFINED");
 
-const hfClient = await Client.connect("yisol/IDM-VTON", {
+const hfClient = await Client.connect("premcreative7/IDM-VTON", {
   hf_token: process.env.HF_TOKEN,
-  token: process.env.HF_TOKEN  // dono rakh lein taaki kisi bhi version me miss na ho
+  token: process.env.HF_TOKEN
 });
 
     console.log("Processing images with IDM-VTON...");
