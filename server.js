@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import { Client, handle_file } from "@gradio/client";
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
@@ -372,13 +373,45 @@ app.post('/api/buy-credits', (req, res) => {
 // ==========================================
 // 👗 6. TRY-ON PIPELINE (FREE HUGGING FACE IDM-VTON)
 // ==========================================
-// Helper function: Base64 string ya URL ko Gradio format me convert karne ke liye
+// Helper: Image URL ya File path ko Base64 Data URL me badalne ke liye
+async function convertOutputToBase64(rawOutput) {
+  try {
+    // Agar output already data URL string hai
+    if (typeof rawOutput === 'string' && rawOutput.startsWith('data:image')) {
+      return rawOutput;
+    }
+
+    const fileUrl = rawOutput?.url || (typeof rawOutput === 'string' && rawOutput.startsWith('http') ? rawOutput : null);
+    const localPath = rawOutput?.path;
+
+    // 1. Agar local temp file path mila ho
+    if (localPath && fs.existsSync(localPath)) {
+      const buffer = fs.readFileSync(localPath);
+      return `data:image/png;base64,${buffer.toString('base64')}`;
+    }
+
+    // 2. Agar Hugging Face URL mila ho (Node 24 fetch se token ke sath download karein)
+    if (fileUrl) {
+      const headers = process.env.HF_TOKEN ? { Authorization: `Bearer ${process.env.HF_TOKEN}` } : {};
+      const response = await fetch(fileUrl, { headers });
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return `data:image/png;base64,${buffer.toString('base64')}`;
+    }
+
+    return null;
+  } catch (err) {
+    console.error("Base64 conversion error:", err);
+    return null;
+  }
+}
+
+// Helper: Inputs ko Gradio format me prepare karne ke liye
 function prepareGradioFile(input) {
   if (typeof input === 'string') {
     if (input.startsWith('http://') || input.startsWith('https://')) {
       return handle_file(input);
     }
-    // Agar Base64 data URL hai (data:image/jpeg;base64,...)
     const base64Clean = input.includes(';base64,') ? input.split(';base64,')[1] : input;
     const imgBuffer = Buffer.from(base64Clean, 'base64');
     return handle_file(imgBuffer);
@@ -399,36 +432,36 @@ app.post('/api/tryon', async (req, res) => {
 
     console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
 
-    // Hugging Face Space se connect karein
     const hfClient = await Client.connect("yisol/IDM-VTON", {
       token: process.env.HF_TOKEN
     });
 
     console.log("Processing images with IDM-VTON...");
 
-    // Gradio ke exact format ke mutabik inputs pass karein
     const result = await hfClient.predict("/tryon", [
       { 
         background: prepareGradioFile(personImage),
         layers: [],
         composite: null 
-      },                             // 1. User image structure
-      prepareGradioFile(clothingImage), // 2. Garment image
-      "Virtual try-on outfit",       // 3. Prompt description
-      true,                          // 4. Auto-masking (is_checked)
-      true,                          // 5. Crop (is_checked_crop)
-      30,                            // 6. Denoise steps
-      42                             // 7. Seed
+      },
+      prepareGradioFile(clothingImage),
+      "Virtual try-on outfit",
+      true,
+      true,
+      30,
+      42
     ]);
 
-    console.log("Try-On successful! Output received.");
+    console.log("Gradio Output Raw Data:", JSON.stringify(result.data));
 
-    // Result URL extract karein
-    const finalResultUrl = result.data?.[0]?.url || result.data?.[0];
+    // Result ko Base64 format me convert karein
+    const finalResultUrl = await convertOutputToBase64(result.data?.[0]);
 
     if (!finalResultUrl) {
-      throw new Error("AI returned empty result from Hugging Face");
+      throw new Error("Could not extract generated image from AI response");
     }
+
+    console.log("Try-On successful! Sending base64 image to app.");
 
     return res.json({ 
       success: true, 
