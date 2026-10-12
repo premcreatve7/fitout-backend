@@ -432,9 +432,12 @@ app.post('/api/tryon', async (req, res) => {
 
     console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
 
-    const hfClient = await Client.connect("yisol/IDM-VTON", {
-      token: process.env.HF_TOKEN
-    });
+   console.log("HF Token status:", process.env.HF_TOKEN ? "Loaded successfully" : "UNDEFINED");
+
+const hfClient = await Client.connect("yisol/IDM-VTON", {
+  hf_token: process.env.HF_TOKEN,
+  token: process.env.HF_TOKEN  // dono rakh lein taaki kisi bhi version me miss na ho
+});
 
     console.log("Processing images with IDM-VTON...");
 
