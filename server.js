@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import dotenv from 'dotenv';
-import fs from 'fs';
+
 import { Client, handle_file } from "@gradio/client";
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
