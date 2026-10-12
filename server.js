@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import dotenv from 'dotenv';
-import { Client } from "@gradio/client";
+import { Client, handle_file } from "@gradio/client";
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import axios from 'axios';
@@ -372,9 +372,23 @@ app.post('/api/buy-credits', (req, res) => {
 // ==========================================
 // 👗 6. TRY-ON PIPELINE (FREE HUGGING FACE IDM-VTON)
 // ==========================================
+// Helper function: Base64 string ya URL ko Gradio format me convert karne ke liye
+function prepareGradioFile(input) {
+  if (typeof input === 'string') {
+    if (input.startsWith('http://') || input.startsWith('https://')) {
+      return handle_file(input);
+    }
+    // Agar Base64 data URL hai (data:image/jpeg;base64,...)
+    const base64Clean = input.includes(';base64,') ? input.split(';base64,')[1] : input;
+    const imgBuffer = Buffer.from(base64Clean, 'base64');
+    return handle_file(imgBuffer);
+  }
+  return handle_file(input);
+}
+
 app.post('/api/tryon', async (req, res) => {
   try {
-    const { personImage, clothingImage, clothingLink, category } = req.body;
+    const { personImage, clothingImage, category } = req.body;
 
     if (!personImage || !clothingImage) {
       return res.status(400).json({ 
@@ -385,22 +399,31 @@ app.post('/api/tryon', async (req, res) => {
 
     console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
 
-    // Hugging Face Space se connect karein using token
+    // Hugging Face Space se connect karein
     const hfClient = await Client.connect("yisol/IDM-VTON", {
-      hf_token: process.env.HF_TOKEN
+      token: process.env.HF_TOKEN
     });
 
-    // Prediction call karein
+    console.log("Processing images with IDM-VTON...");
+
+    // Gradio ke exact format ke mutabik inputs pass karein
     const result = await hfClient.predict("/tryon", [
-      { background: personImage },   // User image (URL ya base64)
-      clothingImage,                 // Garment image
-      "Virtual try-on outfit",       // Description prompt
-      true,                          // is_checked (crop)
-      true,                          // is_checked_crop
-      30,                            // denoise steps
-      42                             // seed
+      { 
+        background: prepareGradioFile(personImage),
+        layers: [],
+        composite: null 
+      },                             // 1. User image structure
+      prepareGradioFile(clothingImage), // 2. Garment image
+      "Virtual try-on outfit",       // 3. Prompt description
+      true,                          // 4. Auto-masking (is_checked)
+      true,                          // 5. Crop (is_checked_crop)
+      30,                            // 6. Denoise steps
+      42                             // 7. Seed
     ]);
 
+    console.log("Try-On successful! Output received.");
+
+    // Result URL extract karein
     const finalResultUrl = result.data?.[0]?.url || result.data?.[0];
 
     if (!finalResultUrl) {
