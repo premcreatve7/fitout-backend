@@ -6,6 +6,8 @@ import { Client, handle_file } from "@gradio/client";
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import axios from 'axios';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -14,7 +16,7 @@ const app = express();
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
 }));
 
 app.use(express.json({ limit: '50mb' }));
@@ -24,9 +26,59 @@ const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ==========================================
-// 🗄️ 1. DATABASE & DAILY CREDIT RESET SYSTEM
+// 🗄️ 1. MONGODB ATLAS CONNECTION & SCHEMAS
 // ==========================================
-const DB_FILE = './database.json';
+const MONGO_URI = process.env.MONGO_URI;
+
+if (MONGO_URI) {
+  mongoose.connect(MONGO_URI)
+    .then(() => console.log('✅ MongoDB Atlas Connected Successfully!'))
+    .catch((err) => console.error('❌ MongoDB Connection Error:', err));
+} else {
+  console.warn('⚠️ MONGO_URI not found in environment variables. Falling back to local mode.');
+}
+
+function getTodayString() {
+  return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+}
+
+// User Schema (Permanent Cloud Storage)
+const userSchema = new mongoose.Schema({
+  phone: { type: String, required: true, unique: true, trim: true },
+  password: { type: String, required: true },
+  name: { type: String, default: 'FitOut User' },
+  credits: { type: Number, default: 2 },
+  last_credit_date: { type: String, default: getTodayString },
+  is_pro: { type: Boolean, default: true },
+  ads_watched: { type: Number, default: 0 },
+  created_at: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', userSchema);
+
+// Catalog Schema (Admin clothes persist across server restarts)
+const catalogSchema = new mongoose.Schema({
+  id: { type: String, unique: true },
+  title: String,
+  category: String,
+  tag: String,
+  imageUrl: String,
+  affiliateUrl: String,
+  created_at: { type: Date, default: Date.now }
+});
+
+const Catalog = mongoose.model('Catalog', catalogSchema);
+
+// Har user ke daily credits check aur reset karne ka helper function
+function applyDailyCreditReset(user) {
+  const today = getTodayString();
+  if (user.last_credit_date !== today) {
+    user.credits = 2; // Har nayi tarikh ko 2 free credits milenge
+    user.last_credit_date = today;
+    return true;
+  }
+  return false;
+}
 
 const INITIAL_CLOTHES = [
   {
@@ -63,82 +115,33 @@ const INITIAL_CLOTHES = [
   }
 ];
 
-function getTodayString() {
-  return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
-}
-
-// Har user ke daily credits check aur reset karne ka function
-function applyDailyCreditReset(user) {
-  const today = getTodayString();
-  if (user.last_credit_date !== today) {
-    user.credits = 2; // Har roz naye 2 free credits
-    user.last_credit_date = today;
-    return true;
-  }
-  return false;
-}
-
-function readDB() {
+// Seed Catalog if empty in Mongo
+async function initCatalog() {
   try {
-    if (!fs.existsSync(DB_FILE)) {
-      const initialData = { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
-      writeDB(initialData);
-      return initialData;
+    const count = await Catalog.countDocuments();
+    if (count === 0) {
+      await Catalog.insertMany(INITIAL_CLOTHES);
+      console.log('📦 Initial catalog seeded to MongoDB.');
     }
-
-    const fileContent = fs.readFileSync(DB_FILE, 'utf-8').trim();
-    if (!fileContent) {
-      const initialData = { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
-      writeDB(initialData);
-      return initialData;
-    }
-
-    const data = JSON.parse(fileContent);
-    if (!data.catalog || data.catalog.length === 0) {
-      data.catalog = INITIAL_CLOTHES;
-    }
-    return data;
-  } catch (err) {
-    return { users: [], generations: [], transactions: [], catalog: INITIAL_CLOTHES };
-  }
-}
-
-function writeDB(data) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
-    console.error("DB Write Error:", e);
+    console.error('Catalog seed error:', e);
   }
 }
-
-// 🚀 Server start hone par purane sabhi users ke abnormal credits ko reset karein
-function initialUserCreditWipe() {
-  const db = readDB();
-  const today = getTodayString();
-  let updated = false;
-
-  db.users.forEach(u => {
-    // Agar kisi tester ne fake 10-50 credits liye the, unhe hata kar 2 credits par reset karein
-    if (u.credits > 2 || u.last_credit_date !== today) {
-      u.credits = 2;
-      u.last_credit_date = today;
-      updated = true;
-    }
-  });
-
-  if (updated) {
-    writeDB(db);
-    console.log("🔄 All tester balances reset to daily 2 credits.");
-  }
-}
-initialUserCreditWipe();
+mongoose.connection.once('open', initCatalog);
 
 // ==========================================
 // 👔 2. HANDPICKED CATALOG & ADMIN API
 // ==========================================
-app.get('/api/handpicked-clothes', (req, res) => {
-  const db = readDB();
-  res.json({ success: true, clothes: db.catalog || [] });
+app.get('/api/handpicked-clothes', async (req, res) => {
+  try {
+    let clothes = await Catalog.find().sort({ created_at: -1 });
+    if (!clothes || clothes.length === 0) {
+      clothes = INITIAL_CLOTHES;
+    }
+    res.json({ success: true, clothes });
+  } catch (err) {
+    res.json({ success: true, clothes: INITIAL_CLOTHES });
+  }
 });
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
@@ -166,20 +169,16 @@ app.post('/api/admin/add-cloth', async (req, res) => {
       }
     }
 
-    const db = readDB();
-    if (!db.catalog) db.catalog = [];
-
-    const newCloth = {
+    const newCloth = new Catalog({
       id: 'hp_' + Date.now(),
       title: title.trim(),
       category: category || detectGarmentCategory(title),
       tag: tag || 'Trending',
       imageUrl: finalImageUrl,
       affiliateUrl: affiliateUrl || amazonUrl || '#'
-    };
+    });
 
-    db.catalog.unshift(newCloth);
-    writeDB(db);
+    await newCloth.save();
 
     return res.json({ 
       success: true, 
@@ -288,72 +287,162 @@ app.post('/api/extract-image', async (req, res) => {
 });
 
 // ==========================================
-// 👤 4. AUTH & PROFILE (Daily 2 Credits Auto-Refill)
+// 👤 4. AUTHENTICATION & CLOUD PROFILE APIS
 // ==========================================
-app.post('/api/auth/login', (req, res) => {
+
+// 1. REGISTER: Naya Account Banae
+app.post('/api/auth/register', async (req, res) => {
   try {
-    const { identifier } = req.body;
-    if (!identifier || identifier.trim() === '') {
-      return res.status(400).json({ success: false, error: "Identifier required" });
+    const { phone, password, name } = req.body;
+    if (!phone || !password) {
+      return res.status(400).json({ success: false, message: 'मोबाइल नंबर और पासवर्ड आवश्यक हैं।' });
     }
 
-    const cleanIdentifier = identifier.trim().toLowerCase();
-    const db = readDB();
-    const today = getTodayString();
+    const cleanPhone = phone.trim();
+    const existing = await User.findOne({ phone: cleanPhone });
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'यह मोबाइल नंबर पहले से रजिस्टर्ड है। कृपया लॉगिन करें।' });
+    }
 
-    let user = db.users.find(u => u.identifier === cleanIdentifier);
-    if (!user) {
-      // Naye tester ko seedha 2 credits milenge
-      user = {
-        id: 'usr_' + Date.now(),
-        identifier: cleanIdentifier,
-        credits: 2,
-        last_credit_date: today,
-        is_pro: true,
-        ads_watched: 0,
-        created_at: new Date().toISOString()
-      };
-      db.users.push(user);
-      writeDB(db);
-    } else {
-      // Purane tester ke credits agar naya din hai toh 2 par refill honge
-      if (applyDailyCreditReset(user)) {
-        writeDB(db);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({
+      phone: cleanPhone,
+      password: hashedPassword,
+      name: name?.trim() || `User_${cleanPhone.slice(-4)}`,
+      credits: 2,
+      last_credit_date: getTodayString()
+    });
+
+    await newUser.save();
+
+    const token = jwt.sign({ id: newUser._id, phone: newUser.phone }, JWT_SECRET, { expiresIn: '60d' });
+    return res.json({
+      success: true,
+      message: 'रजिस्ट्रेशन सफल रहा!',
+      token,
+      user: {
+        id: newUser._id,
+        phone: newUser.phone,
+        name: newUser.name,
+        credits: newUser.credits
       }
-    }
-
-    const token = jwt.sign({ id: user.id, identifier: user.identifier }, JWT_SECRET, { expiresIn: '30d' });
-    return res.json({ success: true, token, user });
+    });
   } catch (err) {
-    return res.status(500).json({ success: false, error: "Internal Auth Error" });
+    console.error('Register Error:', err);
+    return res.status(500).json({ success: false, message: 'रजिस्ट्रेशन में सर्वर त्रुटि हुई।' });
   }
 });
 
-// User Profile / Balance Check Endpoint
-app.get('/api/user/profile', (req, res) => {
-  const userId = req.query.userId || req.headers['x-user-id'];
-  if (!userId) {
-    return res.status(400).json({ success: false, error: "User ID required" });
-  }
+// 2. LOGIN: Asli Password Check Kare
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { phone, identifier, password } = req.body;
+    const userPhone = (phone || identifier || '').trim();
 
-  const db = readDB();
-  const user = db.users.find(u => u.id === userId || u.identifier === userId.toLowerCase());
-  if (!user) {
-    return res.status(404).json({ success: false, error: "User not found" });
-  }
+    if (!userPhone) {
+      return res.status(400).json({ success: false, message: 'मोबाइल नंबर दर्ज करें।' });
+    }
 
-  if (applyDailyCreditReset(user)) {
-    writeDB(db);
-  }
+    const user = await User.findOne({ phone: userPhone });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'यह नंबर रजिस्टर्ड नहीं है। पहले साइन अप करें।' });
+    }
 
-  return res.json({ success: true, user });
+    // Strict Password Verification
+    if (password) {
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) {
+        return res.status(401).json({ success: false, message: 'गलत पासवर्ड! कृपया सही पासवर्ड डालें।' });
+      }
+    }
+
+    // Daily Credit Reset Check
+    if (applyDailyCreditReset(user)) {
+      await user.save();
+    }
+
+    const token = jwt.sign({ id: user._id, phone: user.phone }, JWT_SECRET, { expiresIn: '60d' });
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        phone: user.phone,
+        name: user.name,
+        credits: user.credits
+      }
+    });
+  } catch (err) {
+    console.error('Login Error:', err);
+    return res.status(500).json({ success: false, message: 'लॉगिन में सर्वर त्रुटि हुई।' });
+  }
+});
+
+// 3. RESET PASSWORD: Naya Password Set Kare
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { phone, newPassword } = req.body;
+    if (!phone || !newPassword) {
+      return res.status(400).json({ success: false, message: 'मोबाइल नंबर और नया पासवर्ड आवश्यक हैं।' });
+    }
+
+    const user = await User.findOne({ phone: phone.trim() });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'यह मोबाइल नंबर रिकॉर्ड में नहीं मिला।' });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    return res.json({ success: true, message: 'पासवर्ड सफलतापूर्वक बदल दिया गया! अब लॉगिन करें।' });
+  } catch (err) {
+    console.error('Reset Password Error:', err);
+    return res.status(500).json({ success: false, message: 'पासवर्ड रीसेट नहीं हो सका।' });
+  }
+});
+
+// 4. PROFILE & CREDIT SYNC (Phone Clear Data Safe)
+app.get('/api/user/profile', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    if (!userId) {
+      return res.status(400).json({ success: false, error: "User ID required" });
+    }
+
+    let user = null;
+    if (mongoose.isValidObjectId(userId)) {
+      user = await User.findById(userId);
+    }
+    if (!user) {
+      user = await User.findOne({ phone: userId.trim() });
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    if (applyDailyCreditReset(user)) {
+      await user.save();
+    }
+
+    return res.json({
+      success: true,
+      user: {
+        id: user._id,
+        phone: user.phone,
+        name: user.name,
+        credits: user.credits
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Profile fetch error" });
+  }
 });
 
 // ==========================================
 // 💳 5. IN-APP PURCHASE LOCK (No Fake Credits)
 // ==========================================
 app.post('/api/buy-credits', (req, res) => {
-  // Fake credit addition ko band kar diya gaya hai
   return res.json({
     success: false,
     message: "Purchase option agle update mein available hoga! Closed testing ke dauran aapko roz 2 free credits milenge."
@@ -361,7 +450,7 @@ app.post('/api/buy-credits', (req, res) => {
 });
 
 // ==========================================
-// 👗 6. TRY-ON PIPELINE (HF IDM-VTON + Quota Check)
+// 👗 6. TRY-ON PIPELINE (HF IDM-VTON + Cloud Quota)
 // ==========================================
 async function convertOutputToBase64(rawOutput) {
   try {
@@ -415,14 +504,20 @@ app.post('/api/tryon', async (req, res) => {
       });
     }
 
-    // 🔒 1. Credit Check Logic
-    const db = readDB();
+    // 🔒 1. Cloud Credit Check Logic
     let user = null;
     if (userId) {
-      user = db.users.find(u => u.id === userId || u.identifier === userId.toLowerCase());
+      if (mongoose.isValidObjectId(userId)) {
+        user = await User.findById(userId);
+      }
+      if (!user) {
+        user = await User.findOne({ phone: String(userId).trim() });
+      }
+
       if (user) {
         applyDailyCreditReset(user);
         if (user.credits <= 0) {
+          await user.save();
           return res.status(403).json({
             success: false,
             error: "Aapka aaj ka free quota (2 credits) khatam ho chuka hai! Kal naye credits milenge."
@@ -432,7 +527,6 @@ app.post('/api/tryon', async (req, res) => {
     }
 
     console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
-    console.log("HF Token status:", process.env.HF_TOKEN ? "Loaded successfully" : "UNDEFINED");
 
     const hfClient = await Client.connect("premcreative7/IDM-VTON", {
       hf_token: process.env.HF_TOKEN,
@@ -461,11 +555,11 @@ app.post('/api/tryon', async (req, res) => {
       throw new Error("Could not extract generated image from AI response");
     }
 
-    // ✂️ 2. Generation success par 1 credit deduct karein
+    // ✂️ 2. Cloud Database se 1 credit deduct karein
     if (user) {
       user.credits = Math.max(0, user.credits - 1);
-      writeDB(db);
-      console.log(`Credit deducted. Remaining for ${user.identifier}: ${user.credits}`);
+      await user.save();
+      console.log(`Credit deducted. Remaining for ${user.phone}: ${user.credits}`);
     }
 
     console.log("Try-On successful! Sending base64 image to app.");
