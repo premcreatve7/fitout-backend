@@ -146,6 +146,33 @@ app.get('/api/handpicked-clothes', async (req, res) => {
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
 
+
+app.post('/api/user/add-credits', async (req, res) => {
+  try {
+    const { userId, credits } = req.body;
+    if (!userId || !credits) {
+      return res.status(400).json({ success: false, message: 'Missing parameters' });
+    }
+
+    // MongoDB me user dhoond kar credits badhayein
+    const user = await User.findOneAndUpdate(
+      { $or: [{ phone: userId }, { _id: userId }] },
+      { $inc: { credits: Number(credits) } },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    return res.json({ success: true, credits: user.credits });
+  } catch (err) {
+    console.error('Error adding credits:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
 app.post('/api/admin/add-cloth', async (req, res) => {
   const { secretKey, title, amazonUrl, affiliateUrl, imageUrl, category, tag } = req.body;
 
