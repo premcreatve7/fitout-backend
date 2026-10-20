@@ -146,7 +146,6 @@ app.get('/api/handpicked-clothes', async (req, res) => {
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
 
-
 app.post('/api/user/add-credits', async (req, res) => {
   try {
     const { userId, credits } = req.body;
@@ -154,9 +153,14 @@ app.post('/api/user/add-credits', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing parameters' });
     }
 
-    // MongoDB me user dhoond kar credits badhayein
+    // Phone number aur ObjectId dono ko safely handle karein
+    let query = { phone: String(userId).trim() };
+    if (mongoose.isValidObjectId(userId)) {
+      query = { $or: [{ phone: String(userId).trim() }, { _id: userId }] };
+    }
+
     const user = await User.findOneAndUpdate(
-      { $or: [{ phone: userId }, { _id: userId }] },
+      query,
       { $inc: { credits: Number(credits) } },
       { new: true }
     );
