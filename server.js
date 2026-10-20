@@ -42,7 +42,7 @@ function getTodayString() {
   return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
 }
 
-// User Schema (Permanent Cloud Storage)
+// User Schema (Permanent Cloud Storage + Safe Purchase History)
 const userSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true },
@@ -51,12 +51,13 @@ const userSchema = new mongoose.Schema({
   last_credit_date: { type: String, default: getTodayString },
   is_pro: { type: Boolean, default: true },
   ads_watched: { type: Number, default: 0 },
+  processedTransactions: { type: [String], default: [] }, // ✅ सुरक्षित रिस्टोर और डुप्लीकेट परचेज से बचाव
   created_at: { type: Date, default: Date.now }
 });
 
 const User = mongoose.model('User', userSchema);
 
-// Catalog Schema (Admin clothes persist across server restarts)
+// Catalog Schema
 const catalogSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
@@ -69,11 +70,14 @@ const catalogSchema = new mongoose.Schema({
 
 const Catalog = mongoose.model('Catalog', catalogSchema);
 
-// Har user ke daily credits check aur reset karne ka helper function
+// ✅ SAFE RESET: ख़रीदे हुए क्रेडिट्स कभी डिलीट नहीं होंगे!
 function applyDailyCreditReset(user) {
   const today = getTodayString();
   if (user.last_credit_date !== today) {
-    user.credits = 2; // Har nayi tarikh ko 2 free credits milenge
+    // अगर यूज़र के पास 2 से कम क्रेडिट्स हैं, तभी 2 फ़्री क्रेडिट्स करें
+    if ((user.credits || 0) < 2) {
+      user.credits = 2;
+    }
     user.last_credit_date = today;
     return true;
   }
@@ -146,29 +150,37 @@ app.get('/api/handpicked-clothes', async (req, res) => {
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
 
+// 💳 ADD CREDITS (Purchase Flow)
 app.post('/api/user/add-credits', async (req, res) => {
   try {
-    const { userId, credits } = req.body;
+    const { userId, credits, transactionId } = req.body;
     if (!userId || !credits) {
       return res.status(400).json({ success: false, message: 'Missing parameters' });
     }
 
-    // Phone number aur ObjectId dono ko safely handle karein
-    let query = { phone: String(userId).trim() };
+    let user = null;
     if (mongoose.isValidObjectId(userId)) {
-      query = { $or: [{ phone: String(userId).trim() }, { _id: userId }] };
+      user = await User.findById(userId);
     }
-
-    const user = await User.findOneAndUpdate(
-      query,
-      { $inc: { credits: Number(credits) } },
-      { new: true }
-    );
+    if (!user) {
+      user = await User.findOne({ phone: String(userId).trim() });
+    }
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    // अगर Transaction ID भेजी गई है और पहले से प्रोसेस है तो दोबारा न जोड़ें
+    if (transactionId && user.processedTransactions?.includes(transactionId)) {
+      return res.json({ success: true, credits: user.credits, message: 'Already processed' });
+    }
+
+    user.credits = (user.credits || 0) + Number(credits);
+    if (transactionId) {
+      user.processedTransactions.push(transactionId);
+    }
+
+    await user.save();
     return res.json({ success: true, credits: user.credits });
   } catch (err) {
     console.error('Error adding credits:', err);
@@ -176,6 +188,66 @@ app.post('/api/user/add-credits', async (req, res) => {
   }
 });
 
+// 🔄 SECURE RESTORE CREDITS ROUTE (No Double-Claims)
+app.post('/api/user/restore-credits', async (req, res) => {
+  try {
+    const { userId, transactions } = req.body;
+    if (!userId || !transactions || !Array.isArray(transactions)) {
+      return res.status(400).json({ success: false, error: 'अमान्य डेटा' });
+    }
+
+    let user = null;
+    if (mongoose.isValidObjectId(userId)) {
+      user = await User.findById(userId);
+    }
+    if (!user) {
+      user = await User.findOne({ phone: String(userId).trim() });
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'यूज़र रिकॉर्ड नहीं मिला।' });
+    }
+
+    if (!user.processedTransactions) {
+      user.processedTransactions = [];
+    }
+
+    let addedCredits = 0;
+
+    for (const tx of transactions) {
+      const txId = tx.transactionIdentifier;
+      const productId = tx.productIdentifier;
+
+      // Duplicate Check: सिर्फ अनक्लेम्ड ट्रांज़ैक्शन पर ही क्रेडिट्स दें
+      if (txId && !user.processedTransactions.includes(txId)) {
+        if (productId === 'credits_10') {
+          addedCredits += 10;
+        } else if (productId === 'credits_30') {
+          addedCredits += 30;
+        }
+        user.processedTransactions.push(txId);
+      }
+    }
+
+    if (addedCredits > 0) {
+      user.credits = (user.credits || 0) + addedCredits;
+      await user.save();
+      return res.json({
+        success: true,
+        message: `${addedCredits} क्रेडिट्स सफलतापूर्वक रिस्टोर हो गए!`,
+        credits: user.credits
+      });
+    } else {
+      return res.json({
+        success: false,
+        error: 'कोई नया या अनक्लेम्ड पेमेंट नहीं मिला। आपके सभी क्रेडिट्स पहले से जुड़े हुए हैं।'
+      });
+    }
+  } catch (error) {
+    console.error('Restore Error:', error);
+    res.status(500).json({ success: false, error: 'सर्वर पर रिस्टोर विफल रहा' });
+  }
+});
 
 app.post('/api/admin/add-cloth', async (req, res) => {
   const { secretKey, title, amazonUrl, affiliateUrl, imageUrl, category, tag } = req.body;
@@ -321,7 +393,7 @@ app.post('/api/extract-image', async (req, res) => {
 // 👤 4. AUTHENTICATION & CLOUD PROFILE APIS
 // ==========================================
 
-// 1. REGISTER: Naya Account Banae
+// 1. REGISTER
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { phone, password, name } = req.body;
@@ -364,7 +436,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 2. LOGIN: Asli Password Check Kare
+// 2. LOGIN
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, identifier, password } = req.body;
@@ -379,7 +451,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(404).json({ success: false, message: 'यह नंबर रजिस्टर्ड नहीं है। पहले साइन अप करें।' });
     }
 
-    // Strict Password Verification
     if (password) {
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) {
@@ -387,7 +458,6 @@ app.post('/api/auth/login', async (req, res) => {
       }
     }
 
-    // Daily Credit Reset Check
     if (applyDailyCreditReset(user)) {
       await user.save();
     }
@@ -409,7 +479,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 3. RESET PASSWORD: Naya Password Set Kare
+// 3. RESET PASSWORD
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { phone, newPassword } = req.body;
@@ -432,8 +502,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// 4. PROFILE & CREDIT SYNC (Phone Clear Data Safe)
-// 4. PROFILE & CREDIT SYNC (Phone Clear Data Safe)
+// 4. PROFILE & CREDIT SYNC
 app.get('/api/user/profile', async (req, res) => {
   try {
     const userId = req.query.userId || req.headers['x-user-id'];
@@ -446,7 +515,7 @@ app.get('/api/user/profile', async (req, res) => {
       user = await User.findById(userId);
     }
     if (!user) {
-      user = await User.findOne({ phone: userId.trim() });
+      user = await User.findOne({ phone: String(userId).trim() });
     }
 
     if (!user) {
@@ -493,10 +562,8 @@ app.post('/api/user/reward-ad', async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Daily reset check
     applyDailyCreditReset(user);
 
-    // MongoDB Atlas me +1 Credit add karein
     user.credits = (user.credits || 0) + 1;
     user.ads_watched = (user.ads_watched || 0) + 1;
     await user.save();
@@ -514,14 +581,13 @@ app.post('/api/user/reward-ad', async (req, res) => {
   }
 });
 
-
 // ==========================================
-// 💳 5. IN-APP PURCHASE LOCK (No Fake Credits)
+// 💳 5. IN-APP PURCHASE FALLBACK
 // ==========================================
 app.post('/api/buy-credits', (req, res) => {
   return res.json({
     success: false,
-    message: "Purchase option agle update mein available hoga! Closed testing ke dauran aapko roz 2 free credits milenge."
+    message: "Google Play In-App Billing is active. Please purchase directly from the app."
   });
 });
 
@@ -596,7 +662,7 @@ app.post('/api/tryon', async (req, res) => {
           await user.save();
           return res.status(403).json({
             success: false,
-            error: "Aapka aaj ka free quota (2 credits) khatam ho chuka hai! Kal naye credits milenge."
+            error: "आपके पास पर्याप्त क्रेडिट्स नहीं हैं! कृपया नए क्रेडिट्स खरीदें या Ad देखकर क्रेडिट पाएं।"
           });
         }
       }
@@ -631,7 +697,7 @@ app.post('/api/tryon', async (req, res) => {
       throw new Error("Could not extract generated image from AI response");
     }
 
-    // ✂️ 2. Cloud Database se 1 credit deduct karein
+    // ✂️ 2. Cloud Database से 1 credit घटाएँ (केवल AI के सफल होने पर)
     if (user) {
       user.credits = Math.max(0, user.credits - 1);
       await user.save();
