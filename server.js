@@ -402,6 +402,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // 4. PROFILE & CREDIT SYNC (Phone Clear Data Safe)
+// 4. PROFILE & CREDIT SYNC (Phone Clear Data Safe)
 app.get('/api/user/profile', async (req, res) => {
   try {
     const userId = req.query.userId || req.headers['x-user-id'];
@@ -438,6 +439,50 @@ app.get('/api/user/profile', async (req, res) => {
     return res.status(500).json({ success: false, error: "Profile fetch error" });
   }
 });
+
+// ==========================================
+// 🎁 REWARD AD CREDIT (MongoDB Cloud Sync)
+// ==========================================
+app.post('/api/user/reward-ad', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID is required' });
+    }
+
+    let user = null;
+    if (mongoose.isValidObjectId(userId)) {
+      user = await User.findById(userId);
+    }
+    if (!user) {
+      user = await User.findOne({ phone: String(userId).trim() });
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Daily reset check
+    applyDailyCreditReset(user);
+
+    // MongoDB Atlas me +1 Credit add karein
+    user.credits = (user.credits || 0) + 1;
+    user.ads_watched = (user.ads_watched || 0) + 1;
+    await user.save();
+
+    console.log(`🎁 Reward credit added for ${user.phone}. New balance: ${user.credits}`);
+
+    return res.json({
+      success: true,
+      message: '+1 Credit successfully added to cloud!',
+      credits: user.credits
+    });
+  } catch (err) {
+    console.error('Reward Credit Error:', err);
+    return res.status(500).json({ success: false, message: 'Reward credit update failed' });
+  }
+});
+
 
 // ==========================================
 // 💳 5. IN-APP PURCHASE LOCK (No Fake Credits)
