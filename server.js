@@ -42,7 +42,7 @@ function getTodayString() {
   return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
 }
 
-// User Schema (Permanent Cloud Storage + Safe Purchase History)
+// User Schema
 const userSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true },
@@ -51,7 +51,7 @@ const userSchema = new mongoose.Schema({
   last_credit_date: { type: String, default: getTodayString },
   is_pro: { type: Boolean, default: true },
   ads_watched: { type: Number, default: 0 },
-  processedTransactions: { type: [String], default: [] }, // ✅ सुरक्षित रिस्टोर और डुप्लीकेट परचेज से बचाव
+  processedTransactions: { type: [String], default: [] },
   created_at: { type: Date, default: Date.now }
 });
 
@@ -70,11 +70,10 @@ const catalogSchema = new mongoose.Schema({
 
 const Catalog = mongoose.model('Catalog', catalogSchema);
 
-// ✅ SAFE RESET: ख़रीदे हुए क्रेडिट्स कभी डिलीट नहीं होंगे!
+// Safe Daily Reset
 function applyDailyCreditReset(user) {
   const today = getTodayString();
   if (user.last_credit_date !== today) {
-    // अगर यूज़र के पास 2 से कम क्रेडिट्स हैं, तभी 2 फ़्री क्रेडिट्स करें
     if ((user.credits || 0) < 2) {
       user.credits = 2;
     }
@@ -119,7 +118,6 @@ const INITIAL_CLOTHES = [
   }
 ];
 
-// Seed Catalog if empty in Mongo
 async function initCatalog() {
   try {
     const count = await Catalog.countDocuments();
@@ -150,7 +148,6 @@ app.get('/api/handpicked-clothes', async (req, res) => {
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
 
-// 💳 ADD CREDITS (Purchase Flow)
 app.post('/api/user/add-credits', async (req, res) => {
   try {
     const { userId, credits, transactionId } = req.body;
@@ -170,7 +167,6 @@ app.post('/api/user/add-credits', async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // अगर Transaction ID भेजी गई है और पहले से प्रोसेस है तो दोबारा न जोड़ें
     if (transactionId && user.processedTransactions?.includes(transactionId)) {
       return res.json({ success: true, credits: user.credits, message: 'Already processed' });
     }
@@ -188,7 +184,6 @@ app.post('/api/user/add-credits', async (req, res) => {
   }
 });
 
-// 🔄 SECURE RESTORE CREDITS ROUTE (No Double-Claims)
 app.post('/api/user/restore-credits', async (req, res) => {
   try {
     const { userId, transactions } = req.body;
@@ -213,12 +208,10 @@ app.post('/api/user/restore-credits', async (req, res) => {
     }
 
     let addedCredits = 0;
-
     for (const tx of transactions) {
       const txId = tx.transactionIdentifier;
       const productId = tx.productIdentifier;
 
-      // Duplicate Check: सिर्फ अनक्लेम्ड ट्रांज़ैक्शन पर ही क्रेडिट्स दें
       if (txId && !user.processedTransactions.includes(txId)) {
         if (productId === 'credits_10') {
           addedCredits += 10;
@@ -262,7 +255,6 @@ app.post('/api/admin/add-cloth', async (req, res) => {
 
   try {
     let finalImageUrl = imageUrl;
-
     if (!finalImageUrl && amazonUrl) {
       const asinMatch = amazonUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
       if (asinMatch && asinMatch[1]) {
@@ -307,12 +299,46 @@ function detectGarmentCategory(urlOrText) {
   if (topKeywords.some(k => text.includes(k))) {
     return 'tops';
   }
-  return 'one-pieces';
+  return 'tops';
 }
 
+// ⚡ Aspect Ratio Detection
+function getImageAspectRatio(base64Str) {
+  try {
+    if (!base64Str || typeof base64Str !== 'string') return 1.0;
+    const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,')[1] : base64Str;
+    const buffer = Buffer.from(clean.slice(0, 4000), 'base64');
+
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+      const width = buffer.readUInt32BE(16);
+      const height = buffer.readUInt32BE(20);
+      return height / width;
+    }
+
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+      let i = 2;
+      while (i < buffer.length - 8) {
+        if (buffer[i] === 0xFF) {
+          const marker = buffer[i + 1];
+          if (marker >= 0xC0 && marker <= 0xC3) {
+            const height = buffer.readUInt16BE(i + 5);
+            const width = buffer.readUInt16BE(i + 7);
+            return height / width;
+          }
+          i += 2 + buffer.readUInt16BE(i + 2);
+        } else {
+          i++;
+        }
+      }
+    }
+  } catch (e) {
+    return 1.0;
+  }
+  return 1.0;
+}
 
 // ==========================================
-// 🛍️ 3. SMART E-COMMERCE SCRAPER (Amazon, Meesho, Flipkart, Myntra, Ajio)
+// 🛍️ 3. SMART E-COMMERCE SCRAPER
 // ==========================================
 app.post('/api/extract-image', async (req, res) => {
   let { url } = req.body;
@@ -324,12 +350,10 @@ app.post('/api/extract-image', async (req, res) => {
     if (urlMatch) url = urlMatch[0].trim();
     if (url.startsWith('//')) url = 'https:' + url;
 
-    // Direct Image Link check
     if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
       return res.json({ success: true, imageUrl: url });
     }
 
-    // 1. Follow Redirects (amzn.in, myntr.it जैसे short links को full URL में बदलें)
     let finalUrl = url;
     let pageHtml = '';
 
@@ -346,18 +370,16 @@ app.post('/api/extract-image', async (req, res) => {
       finalUrl = response.request?.res?.responseUrl || url;
       pageHtml = typeof response.data === 'string' ? response.data : '';
     } catch (e) {
-      console.warn("Direct page fetch failed, trying fallback:", e.message);
+      console.warn("Direct page fetch failed:", e.message);
     }
 
     let extractedImage = null;
 
-    // 2. Amazon ASIN High-Res Direct Extraction
     const asinMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
     if ((finalUrl.includes('amazon') || url.includes('amzn')) && asinMatch && asinMatch[1]) {
       extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
     }
 
-    // 3. Open Graph Meta Tag Extraction (Meesho, Flipkart, Myntra, Ajio)
     if (!extractedImage && pageHtml) {
       const ogMatch = pageHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
                       pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
@@ -373,7 +395,6 @@ app.post('/api/extract-image', async (req, res) => {
       }
     }
 
-    // 4. Meesho API Fallback
     if (!extractedImage && finalUrl.includes('meesho.com')) {
       const meeshoMatch = finalUrl.match(/\/p\/([a-zA-Z0-9]+)/i);
       if (meeshoMatch && meeshoMatch[1]) {
@@ -389,7 +410,6 @@ app.post('/api/extract-image', async (req, res) => {
       }
     }
 
-    // 5. Jina AI Reader Fallback
     if (!extractedImage) {
       try {
         const jinaRes = await axios.get(`https://r.jina.ai/${finalUrl}`, { timeout: 8000 });
@@ -421,8 +441,6 @@ app.post('/api/extract-image', async (req, res) => {
 // ==========================================
 // 👤 4. AUTHENTICATION & CLOUD PROFILE APIS
 // ==========================================
-
-// 1. REGISTER
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { phone, password, name } = req.body;
@@ -465,7 +483,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 2. LOGIN
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, identifier, password } = req.body;
@@ -508,7 +525,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 3. RESET PASSWORD
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { phone, newPassword } = req.body;
@@ -531,7 +547,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// 4. PROFILE & CREDIT SYNC
 app.get('/api/user/profile', async (req, res) => {
   try {
     const userId = req.query.userId || req.headers['x-user-id'];
@@ -569,9 +584,6 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
-// ==========================================
-// 🎁 REWARD AD CREDIT (MongoDB Cloud Sync)
-// ==========================================
 app.post('/api/user/reward-ad', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -592,12 +604,9 @@ app.post('/api/user/reward-ad', async (req, res) => {
     }
 
     applyDailyCreditReset(user);
-
     user.credits = (user.credits || 0) + 1;
     user.ads_watched = (user.ads_watched || 0) + 1;
     await user.save();
-
-    console.log(`🎁 Reward credit added for ${user.phone}. New balance: ${user.credits}`);
 
     return res.json({
       success: true,
@@ -610,9 +619,6 @@ app.post('/api/user/reward-ad', async (req, res) => {
   }
 });
 
-// ==========================================
-// 💳 5. IN-APP PURCHASE FALLBACK
-// ==========================================
 app.post('/api/buy-credits', (req, res) => {
   return res.json({
     success: false,
@@ -666,7 +672,8 @@ function prepareGradioFile(input) {
 
 app.post('/api/tryon', async (req, res) => {
   try {
-    const { personImage, clothingImage, category, userId } = req.body;
+    // ✅ clothingLink को req.body से निकाला
+    const { personImage, clothingImage, clothingLink, category, userId } = req.body;
 
     if (!personImage || !clothingImage) {
       return res.status(400).json({ 
@@ -675,15 +682,10 @@ app.post('/api/tryon', async (req, res) => {
       });
     }
 
-    // 🔒 1. Cloud Credit Check Logic
     let user = null;
     if (userId) {
-      if (mongoose.isValidObjectId(userId)) {
-        user = await User.findById(userId);
-      }
-      if (!user) {
-        user = await User.findOne({ phone: String(userId).trim() });
-      }
+      if (mongoose.isValidObjectId(userId)) user = await User.findById(userId);
+      if (!user) user = await User.findOne({ phone: String(userId).trim() });
 
       if (user) {
         applyDailyCreditReset(user);
@@ -697,14 +699,29 @@ app.post('/api/tryon', async (req, res) => {
       }
     }
 
-    console.log("Try-on request received. Connecting to Hugging Face IDM-VTON...");
+    // 🧠 Aspect Ratio और Keywords से डायनामिक प्रॉम्प्ट
+    const ratio = getImageAspectRatio(clothingImage);
+    const urlCategory = detectGarmentCategory(clothingLink || "");
 
+    let targetPrompt = "Upper body shirt, top, t-shirt outfit";
+
+    if (urlCategory === 'one-pieces' || ratio >= 1.25) {
+      targetPrompt = "A realistic full length one-piece dress, frock, kurti, gown, full body outfit";
+      console.log(`👗 Full Body Dress Detected! Ratio: ${ratio.toFixed(2)}`);
+    } else if (urlCategory === 'bottoms') {
+      targetPrompt = "Lower body pants, jeans, trousers, shorts";
+      console.log(`👖 Bottoms Detected! Ratio: ${ratio.toFixed(2)}`);
+    } else {
+      console.log(`👚 Upper Body Top Detected! Ratio: ${ratio.toFixed(2)}`);
+    }
+
+    console.log("Connecting to Hugging Face IDM-VTON...");
+
+    // ✅ Hugging Face Client कनेक्शन
     const hfClient = await Client.connect("premcreative7/IDM-VTON", {
       hf_token: process.env.HF_TOKEN,
       token: process.env.HF_TOKEN
     });
-
-    console.log("Processing images with IDM-VTON...");
 
     const result = await hfClient.predict("/tryon", [
       { 
@@ -713,7 +730,7 @@ app.post('/api/tryon', async (req, res) => {
         composite: null 
       },
       prepareGradioFile(clothingImage),
-      "Virtual try-on outfit",
+      targetPrompt,
       true,
       true,
       30,
@@ -726,14 +743,11 @@ app.post('/api/tryon', async (req, res) => {
       throw new Error("Could not extract generated image from AI response");
     }
 
-    // ✂️ 2. Cloud Database से 1 credit घटाएँ (केवल AI के सफल होने पर)
     if (user) {
       user.credits = Math.max(0, user.credits - 1);
       await user.save();
-      console.log(`Credit deducted. Remaining for ${user.phone}: ${user.credits}`);
+      console.log(`Credit deducted. Remaining: ${user.credits}`);
     }
-
-    console.log("Try-On successful! Sending base64 image to app.");
 
     return res.json({ 
       success: true, 
