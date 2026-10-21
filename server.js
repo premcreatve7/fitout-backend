@@ -310,8 +310,9 @@ function detectGarmentCategory(urlOrText) {
   return 'one-pieces';
 }
 
+
 // ==========================================
-// 🛍️ 3. E-COMMERCE SCRAPER
+// 🛍️ 3. SMART E-COMMERCE SCRAPER (Amazon, Meesho, Flipkart, Myntra, Ajio)
 // ==========================================
 app.post('/api/extract-image', async (req, res) => {
   let { url } = req.body;
@@ -323,54 +324,82 @@ app.post('/api/extract-image', async (req, res) => {
     if (urlMatch) url = urlMatch[0].trim();
     if (url.startsWith('//')) url = 'https:' + url;
 
-    if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i) || 
-      url.includes('media-amazon.com/images') || 
-      url.includes('rukminim') || 
-      url.includes('images.meesho.com')) {
-      try {
-        const directImg = await axios.get(url, { 
-          responseType: 'arraybuffer', 
-          timeout: 8000, 
-          headers: { 'User-Agent': 'Mozilla/5.0' } 
-        });
-        const b64 = Buffer.from(directImg.data, 'binary').toString('base64');
-        const mime = directImg.headers['content-type'] || 'image/jpeg';
-        return res.json({ success: true, imageUrl: `data:${mime};base64,${b64}` });
-      } catch (err) {
-        return res.json({ success: true, imageUrl: url });
-      }
+    // Direct Image Link check
+    if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
+      return res.json({ success: true, imageUrl: url });
+    }
+
+    // 1. Follow Redirects (amzn.in, myntr.it जैसे short links को full URL में बदलें)
+    let finalUrl = url;
+    let pageHtml = '';
+
+    try {
+      const response = await axios.get(url, {
+        maxRedirects: 5,
+        timeout: 9000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+      finalUrl = response.request?.res?.responseUrl || url;
+      pageHtml = typeof response.data === 'string' ? response.data : '';
+    } catch (e) {
+      console.warn("Direct page fetch failed, trying fallback:", e.message);
     }
 
     let extractedImage = null;
 
-    const meeshoMatch = url.match(/\/p\/([a-zA-Z0-9]+)/i);
-    if (url.includes('meesho.com') && meeshoMatch && meeshoMatch[1]) {
-      try {
-        const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.meesho.com/' },
-          timeout: 6000
-        });
-        const pData = meeshoRes.data;
-        if (pData?.images?.length > 0) extractedImage = pData.images[0];
-        else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
-      } catch (e) {}
-    }
-
-    const asinMatch = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-    if (url.includes('amazon') && asinMatch && asinMatch[1]) {
+    // 2. Amazon ASIN High-Res Direct Extraction
+    const asinMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if ((finalUrl.includes('amazon') || url.includes('amzn')) && asinMatch && asinMatch[1]) {
       extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
     }
 
+    // 3. Open Graph Meta Tag Extraction (Meesho, Flipkart, Myntra, Ajio)
+    if (!extractedImage && pageHtml) {
+      const ogMatch = pageHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
+                      pageHtml.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']twitter:image["']/i);
+
+      if (ogMatch && ogMatch[1]) {
+        let img = ogMatch[1].trim();
+        if (img.startsWith('//')) img = 'https:' + img;
+        if (!img.toLowerCase().includes('logo') && !img.endsWith('.svg')) {
+          extractedImage = img;
+        }
+      }
+    }
+
+    // 4. Meesho API Fallback
+    if (!extractedImage && finalUrl.includes('meesho.com')) {
+      const meeshoMatch = finalUrl.match(/\/p\/([a-zA-Z0-9]+)/i);
+      if (meeshoMatch && meeshoMatch[1]) {
+        try {
+          const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 6000
+          });
+          const pData = meeshoRes.data;
+          if (pData?.images?.length > 0) extractedImage = pData.images[0];
+          else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
+        } catch (e) {}
+      }
+    }
+
+    // 5. Jina AI Reader Fallback
     if (!extractedImage) {
       try {
-        const jinaRes = await axios.get(`https://r.jina.ai/${url}`, { headers: { 'X-Return-Format': 'markdown' }, timeout: 8000 });
+        const jinaRes = await axios.get(`https://r.jina.ai/${finalUrl}`, { timeout: 8000 });
         const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
         const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
         if (imgMatches && imgMatches.length > 0) {
           for (const m of imgMatches) {
             const singleUrl = m.match(/\((https?:\/\/[^\s\)]+)\)/)[1];
             const lower = singleUrl.toLowerCase();
-            if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.includes('svg')) {
+            if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.endsWith('.svg')) {
               extractedImage = singleUrl;
               break;
             }
@@ -383,9 +412,9 @@ app.post('/api/extract-image', async (req, res) => {
       return res.json({ success: true, imageUrl: extractedImage });
     }
 
-    return res.status(404).json({ success: false, message: 'Could not extract product photo.' });
+    return res.status(404).json({ success: false, message: 'इस लिंक से फोटो नहीं मिल पाई। कृपया फोटो सीधे अपलोड करें।' });
   } catch (err) {
-    return res.status(500).json({ success: false, message: 'Server error processing URL' });
+    return res.status(500).json({ success: false, message: 'URL प्रोसेस करने में सर्वर एरर आया।' });
   }
 });
 
