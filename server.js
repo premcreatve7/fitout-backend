@@ -285,20 +285,25 @@ app.post('/api/admin/add-cloth', async (req, res) => {
   }
 });
 
+// ⚡ Accurate Category Detection (Tops ko pehle priority taaki shirt lamba na ho)
 function detectGarmentCategory(urlOrText) {
   const text = (urlOrText || '').toLowerCase();
-  const bottomKeywords = ['jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 'legging', 'lower', 'trackpant'];
-  if (bottomKeywords.some(k => text.includes(k)) && !text.includes('set') && !text.includes('suit')) {
-    return 'bottoms';
-  }
-  const fullBodyKeywords = ['dress', 'frock', 'gown', 'jumpsuit', 'maxi', 'suit', 'kurta', 'kurti', 'co-ord', 'set', 'saree', 'lehenga', 'anarkali'];
-  if (fullBodyKeywords.some(k => text.includes(k))) {
-    return 'one-pieces';
-  }
-  const topKeywords = ['shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 'blazer', 'sweater', 'blouse', 'shrug'];
+
+  const topKeywords = ['shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'];
   if (topKeywords.some(k => text.includes(k))) {
     return 'tops';
   }
+
+  const bottomKeywords = ['jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 'legging', 'lower', 'trackpant', 'cargo'];
+  if (bottomKeywords.some(k => text.includes(k)) && !text.includes('set') && !text.includes('suit')) {
+    return 'bottoms';
+  }
+
+  const fullBodyKeywords = ['dress', 'frock', 'gown', 'jumpsuit', 'maxi', 'suit', 'kurti', 'co-ord', 'set', 'saree', 'lehenga', 'anarkali'];
+  if (fullBodyKeywords.some(k => text.includes(k))) {
+    return 'one-pieces';
+  }
+
   return 'tops';
 }
 
@@ -672,7 +677,6 @@ function prepareGradioFile(input) {
 
 app.post('/api/tryon', async (req, res) => {
   try {
-    // ✅ clothingLink को req.body से निकाला
     const { personImage, clothingImage, clothingLink, category, userId } = req.body;
 
     if (!personImage || !clothingImage) {
@@ -699,16 +703,18 @@ app.post('/api/tryon', async (req, res) => {
       }
     }
 
-    // 🧠 Aspect Ratio और Keywords से डायनामिक प्रॉम्प्ट
+    // 🧠 Aspect Ratio और Category Logic (शर्ट को कमर तक रखने के लिए सुरक्षित जांच)
     const ratio = getImageAspectRatio(clothingImage);
-    const urlCategory = detectGarmentCategory(clothingLink || "");
+    const detectedCategory = detectGarmentCategory(clothingLink || "");
+    const finalCategory = category || detectedCategory;
 
-    let targetPrompt = "Upper body shirt, top, t-shirt outfit";
+    let targetPrompt = "A neat waist-length upper body shirt, top, t-shirt, short kurta, natural waistline outfit";
 
-    if (urlCategory === 'one-pieces' || ratio >= 1.25) {
+    // Dress sirf tab maanein jab category explicitly 'one-pieces' ho, YA ratio 1.55+ ho aur wo top na ho
+    if (finalCategory === 'one-pieces' || (ratio >= 1.55 && finalCategory !== 'tops')) {
       targetPrompt = "A realistic full length one-piece dress, frock, kurti, gown, full body outfit";
       console.log(`👗 Full Body Dress Detected! Ratio: ${ratio.toFixed(2)}`);
-    } else if (urlCategory === 'bottoms') {
+    } else if (finalCategory === 'bottoms') {
       targetPrompt = "Lower body pants, jeans, trousers, shorts";
       console.log(`👖 Bottoms Detected! Ratio: ${ratio.toFixed(2)}`);
     } else {
@@ -717,12 +723,12 @@ app.post('/api/tryon', async (req, res) => {
 
     console.log("Connecting to Hugging Face IDM-VTON...");
 
-    // ✅ Hugging Face Client कनेक्शन
     const hfClient = await Client.connect("premcreative7/IDM-VTON", {
       hf_token: process.env.HF_TOKEN,
       token: process.env.HF_TOKEN
     });
 
+    // 🛡️ Parameter 5 ko false kiya gaya hai taaki auto-crop zoom aur seams chehre/haathon ko kharab na karein
     const result = await hfClient.predict("/tryon", [
       { 
         background: prepareGradioFile(personImage),
@@ -731,10 +737,10 @@ app.post('/api/tryon', async (req, res) => {
       },
       prepareGradioFile(clothingImage),
       targetPrompt,
-      true,
-      true,
-      30,
-      42
+      true,  // is_checked (auto mask)
+      false, // is_checked_crop (False rakhne se original framing, face aur hands safe rehte hain)
+      30,    // denoise_steps
+      42     // seed
     ]);
 
     const finalResultUrl = await convertOutputToBase64(result.data?.[0]);
@@ -752,7 +758,7 @@ app.post('/api/tryon', async (req, res) => {
     return res.json({ 
       success: true, 
       resultImageUrl: finalResultUrl,
-      appliedCategory: category || "tops",
+      appliedCategory: finalCategory,
       remainingCredits: user ? user.credits : undefined
     });
 
