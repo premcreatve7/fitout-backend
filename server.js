@@ -264,10 +264,12 @@ app.post('/api/admin/add-cloth', async (req, res) => {
       }
     }
 
+    const detected = detectGarmentCategory(title);
+
     const newCloth = new Catalog({
       id: 'hp_' + Date.now(),
       title: title.trim(),
-      category: category || detectGarmentCategory(title),
+      category: category || detected || 'tops',
       tag: tag || 'Trending',
       imageUrl: finalImageUrl,
       affiliateUrl: affiliateUrl || amazonUrl || '#'
@@ -285,26 +287,43 @@ app.post('/api/admin/add-cloth', async (req, res) => {
   }
 });
 
-// ⚡ Accurate Category Detection (Tops ko pehle priority taaki shirt lamba na ho)
+// ⚡ Accurate Category Detection
+// Full-body dresses aur Saree ko pehle priority, taaki wo upper_body me na dab jayein
 function detectGarmentCategory(urlOrText) {
-  const text = (urlOrText || '').toLowerCase();
-
-  const topKeywords = ['shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'];
-  if (topKeywords.some(k => text.includes(k))) {
-    return 'tops';
+  if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) {
+    return null; // Null return karega taaki direct image upload par aspect-ratio decide kare
   }
 
-  const bottomKeywords = ['jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 'legging', 'lower', 'trackpant', 'cargo'];
-  if (bottomKeywords.some(k => text.includes(k)) && !text.includes('set') && !text.includes('suit')) {
-    return 'bottoms';
-  }
+  const text = urlOrText.toLowerCase();
 
-  const fullBodyKeywords = ['dress', 'frock', 'gown', 'jumpsuit', 'maxi', 'suit', 'kurti', 'co-ord', 'set', 'saree', 'lehenga', 'anarkali'];
+  // 1. Full-body / One-pieces / Saree
+  const fullBodyKeywords = [
+    'saree', 'sari', 'dress', 'frock', 'gown', 'jumpsuit', 'maxi', 
+    'suit', 'kurti', 'co-ord', 'set', 'lehenga', 'anarkali', 'robe', 'choli'
+  ];
   if (fullBodyKeywords.some(k => text.includes(k))) {
     return 'one-pieces';
   }
 
-  return 'tops';
+  // 2. Bottoms
+  const bottomKeywords = [
+    'jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 
+    'legging', 'lower', 'trackpant', 'cargo'
+  ];
+  if (bottomKeywords.some(k => text.includes(k))) {
+    return 'bottoms';
+  }
+
+  // 3. Tops
+  const topKeywords = [
+    'shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 
+    'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'
+  ];
+  if (topKeywords.some(k => text.includes(k))) {
+    return 'tops';
+  }
+
+  return null;
 }
 
 // ⚡ Aspect Ratio Detection
@@ -703,32 +722,43 @@ app.post('/api/tryon', async (req, res) => {
       }
     }
 
-    // 🧠 Aspect Ratio और Category Logic (शर्ट को कमर तक रखने के लिए सुरक्षित जांच)
+    // 🧠 Dynamic Aspect Ratio & Category Detection
     const ratio = getImageAspectRatio(clothingImage);
     const detectedCategory = detectGarmentCategory(clothingLink || "");
-    const finalCategory = category || detectedCategory;
+    let finalCategory = category || detectedCategory;
+
+    // Direct Image Upload (bina link ke): aspect ratio se category decide hogi
+    if (!finalCategory) {
+      if (ratio >= 1.35) {
+        finalCategory = 'one-pieces'; // Lambi photo = Saree, Gown, Maxi
+      } else {
+        finalCategory = 'tops';
+      }
+    }
 
     let targetPrompt = "A neat waist-length upper body shirt, top, t-shirt, short kurta, natural waistline outfit";
 
-    // Dress sirf tab maanein jab category explicitly 'one-pieces' ho, YA ratio 1.55+ ho aur wo top na ho
-    if (finalCategory === 'one-pieces' || (ratio >= 1.55 && finalCategory !== 'tops')) {
-      targetPrompt = "A realistic full length one-piece dress, frock, kurti, gown, full body outfit";
-      console.log(`👗 Full Body Dress Detected! Ratio: ${ratio.toFixed(2)}`);
+    // Agar category one-pieces ho YA tall image ratio ho (aur explicit tops na ho)
+    if (finalCategory === 'one-pieces' || (ratio >= 1.45 && finalCategory !== 'tops' && finalCategory !== 'bottoms')) {
+      targetPrompt = "A realistic full length one-piece saree, dress, frock, kurti, gown, full body outfit";
+      finalCategory = 'one-pieces';
+      console.log(`👗 Full Body Saree / Dress Detected! Ratio: ${ratio.toFixed(2)}`);
     } else if (finalCategory === 'bottoms') {
       targetPrompt = "Lower body pants, jeans, trousers, shorts";
       console.log(`👖 Bottoms Detected! Ratio: ${ratio.toFixed(2)}`);
     } else {
+      targetPrompt = "A neat waist-length upper body shirt, top, t-shirt, short kurta, natural waistline outfit";
+      finalCategory = 'tops';
       console.log(`👚 Upper Body Top Detected! Ratio: ${ratio.toFixed(2)}`);
     }
 
-    console.log("Connecting to Hugging Face IDM-VTON...");
+    console.log(`Sending to IDM-VTON | Category: ${finalCategory} | Ratio: ${ratio.toFixed(2)}`);
 
     const hfClient = await Client.connect("premcreative7/IDM-VTON", {
       hf_token: process.env.HF_TOKEN,
       token: process.env.HF_TOKEN
     });
 
-    // 🛡️ Parameter 5 ko false kiya gaya hai taaki auto-crop zoom aur seams chehre/haathon ko kharab na karein
     const result = await hfClient.predict("/tryon", [
       { 
         background: prepareGradioFile(personImage),
@@ -738,7 +768,7 @@ app.post('/api/tryon', async (req, res) => {
       prepareGradioFile(clothingImage),
       targetPrompt,
       true,  // is_checked (auto mask)
-      false, // is_checked_crop (False rakhne se original framing, face aur hands safe rehte hain)
+      false, // is_checked_crop (original framing safe)
       30,    // denoise_steps
       42     // seed
     ]);
