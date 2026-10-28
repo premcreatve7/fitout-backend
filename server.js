@@ -8,6 +8,8 @@ import fs from 'fs';
 import axios from 'axios';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import Razorpay from 'razorpay';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -26,7 +28,24 @@ const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ==========================================
-// 🗄️ 1. MONGODB ATLAS CONNECTION & SCHEMAS
+// 💳 1. RAZORPAY INITIALIZATION
+// ==========================================
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+
+let razorpay = null;
+if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET) {
+  razorpay = new Razorpay({
+    key_id: RAZORPAY_KEY_ID,
+    key_secret: RAZORPAY_KEY_SECRET,
+  });
+  console.log('✅ Razorpay Payment Gateway Initialized!');
+} else {
+  console.warn('⚠️ RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing in .env! Payments will not work.');
+}
+
+// ==========================================
+// 🗄️ 2. MONGODB ATLAS CONNECTION & SCHEMAS
 // ==========================================
 const MONGO_URI = process.env.MONGO_URI;
 
@@ -51,7 +70,7 @@ const userSchema = new mongoose.Schema({
   last_credit_date: { type: String, default: getTodayString },
   is_pro: { type: Boolean, default: true },
   ads_watched: { type: Number, default: 0 },
-  processedTransactions: { type: [String], default: [] },
+  processedTransactions: { type: [String], default: [] }, // For Replay Attack Prevention
   created_at: { type: Date, default: Date.now }
 });
 
@@ -132,7 +151,7 @@ async function initCatalog() {
 mongoose.connection.once('open', initCatalog);
 
 // ==========================================
-// 👔 2. HANDPICKED CATALOG & ADMIN API
+// 👔 3. CATALOG & ADMIN APIS
 // ==========================================
 app.get('/api/handpicked-clothes', async (req, res) => {
   try {
@@ -147,100 +166,6 @@ app.get('/api/handpicked-clothes', async (req, res) => {
 });
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
-
-app.post('/api/user/add-credits', async (req, res) => {
-  try {
-    const { userId, credits, transactionId } = req.body;
-    if (!userId || !credits) {
-      return res.status(400).json({ success: false, message: 'Missing parameters' });
-    }
-
-    let user = null;
-    if (mongoose.isValidObjectId(userId)) {
-      user = await User.findById(userId);
-    }
-    if (!user) {
-      user = await User.findOne({ phone: String(userId).trim() });
-    }
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    if (transactionId && user.processedTransactions?.includes(transactionId)) {
-      return res.json({ success: true, credits: user.credits, message: 'Already processed' });
-    }
-
-    user.credits = (user.credits || 0) + Number(credits);
-    if (transactionId) {
-      user.processedTransactions.push(transactionId);
-    }
-
-    await user.save();
-    return res.json({ success: true, credits: user.credits });
-  } catch (err) {
-    console.error('Error adding credits:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-app.post('/api/user/restore-credits', async (req, res) => {
-  try {
-    const { userId, transactions } = req.body;
-    if (!userId || !transactions || !Array.isArray(transactions)) {
-      return res.status(400).json({ success: false, error: 'अमान्य डेटा' });
-    }
-
-    let user = null;
-    if (mongoose.isValidObjectId(userId)) {
-      user = await User.findById(userId);
-    }
-    if (!user) {
-      user = await User.findOne({ phone: String(userId).trim() });
-    }
-
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'यूज़र रिकॉर्ड नहीं मिला।' });
-    }
-
-    if (!user.processedTransactions) {
-      user.processedTransactions = [];
-    }
-
-    let addedCredits = 0;
-    for (const tx of transactions) {
-      const txId = tx.transactionIdentifier;
-      const productId = tx.productIdentifier;
-
-      if (txId && !user.processedTransactions.includes(txId)) {
-        if (productId === 'credits_10') {
-          addedCredits += 10;
-        } else if (productId === 'credits_30') {
-          addedCredits += 30;
-        }
-        user.processedTransactions.push(txId);
-      }
-    }
-
-    if (addedCredits > 0) {
-      user.credits = (user.credits || 0) + addedCredits;
-      await user.save();
-      return res.json({
-        success: true,
-        message: `${addedCredits} क्रेडिट्स सफलतापूर्वक रिस्टोर हो गए!`,
-        credits: user.credits
-      });
-    } else {
-      return res.json({
-        success: false,
-        error: 'कोई नया या अनक्लेम्ड पेमेंट नहीं मिला। आपके सभी क्रेडिट्स पहले से जुड़े हुए हैं।'
-      });
-    }
-  } catch (error) {
-    console.error('Restore Error:', error);
-    res.status(500).json({ success: false, error: 'सर्वर पर रिस्टोर विफल रहा' });
-  }
-});
 
 app.post('/api/admin/add-cloth', async (req, res) => {
   const { secretKey, title, amazonUrl, affiliateUrl, imageUrl, category, tag } = req.body;
@@ -287,183 +212,128 @@ app.post('/api/admin/add-cloth', async (req, res) => {
   }
 });
 
-// ⚡ Accurate Category Detection
-// Full-body dresses aur Saree ko pehle priority, taaki wo upper_body me na dab jayein
-function detectGarmentCategory(urlOrText) {
-  if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) {
-    return null; // Null return karega taaki direct image upload par aspect-ratio decide kare
-  }
+// ==========================================
+// 💳 4. SECURE RAZORPAY PAYMENT SYSTEM
+// ==========================================
 
-  const text = urlOrText.toLowerCase();
-
-  // 1. Full-body / One-pieces / Saree
-  const fullBodyKeywords = [
-    'saree', 'sari', 'dress', 'frock', 'gown', 'jumpsuit', 'maxi', 
-    'suit', 'kurti', 'co-ord', 'set', 'lehenga', 'anarkali', 'robe', 'choli'
-  ];
-  if (fullBodyKeywords.some(k => text.includes(k))) {
-    return 'one-pieces';
-  }
-
-  // 2. Bottoms
-  const bottomKeywords = [
-    'jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 
-    'legging', 'lower', 'trackpant', 'cargo'
-  ];
-  if (bottomKeywords.some(k => text.includes(k))) {
-    return 'bottoms';
-  }
-
-  // 3. Tops
-  const topKeywords = [
-    'shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 
-    'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'
-  ];
-  if (topKeywords.some(k => text.includes(k))) {
-    return 'tops';
-  }
-
-  return null;
-}
-
-// ⚡ Aspect Ratio Detection
-function getImageAspectRatio(base64Str) {
+// 1. Create Razorpay Order
+app.post('/api/payment/create-order', async (req, res) => {
   try {
-    if (!base64Str || typeof base64Str !== 'string') return 1.0;
-    const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,')[1] : base64Str;
-    const buffer = Buffer.from(clean.slice(0, 4000), 'base64');
-
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-      const width = buffer.readUInt32BE(16);
-      const height = buffer.readUInt32BE(20);
-      return height / width;
+    if (!razorpay) {
+      return res.status(500).json({ success: false, message: 'Razorpay keys backend me configure nahi hain.' });
     }
 
-    if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
-      let i = 2;
-      while (i < buffer.length - 8) {
-        if (buffer[i] === 0xFF) {
-          const marker = buffer[i + 1];
-          if (marker >= 0xC0 && marker <= 0xC3) {
-            const height = buffer.readUInt16BE(i + 5);
-            const width = buffer.readUInt16BE(i + 7);
-            return height / width;
-          }
-          i += 2 + buffer.readUInt16BE(i + 2);
-        } else {
-          i++;
-        }
+    const { amount, planId, userId } = req.body;
+
+    if (!amount || !userId) {
+      return res.status(400).json({ success: false, message: 'Amount aur User ID zaroori hain' });
+    }
+
+    const options = {
+      amount: Math.round(Number(amount) * 100), // Convert ₹ to Paise (₹49 = 4900 paise)
+      currency: 'INR',
+      receipt: `rcpt_${Date.now()}_${String(userId).slice(-4)}`,
+      notes: { 
+        userId: String(userId), 
+        planId: planId || 'credits_pack' 
       }
-    }
-  } catch (e) {
-    return 1.0;
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    return res.json({
+      success: true,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      keyId: RAZORPAY_KEY_ID
+    });
+  } catch (error) {
+    console.error('Razorpay Create Order Error:', error);
+    return res.status(500).json({ success: false, message: 'Order generate nahi ho saka.' });
   }
-  return 1.0;
-}
+});
 
-// ==========================================
-// 🛍️ 3. SMART E-COMMERCE SCRAPER
-// ==========================================
-app.post('/api/extract-image', async (req, res) => {
-  let { url } = req.body;
-  if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
-
+// 2. Cryptographic Signature Verification & Credit Addition (Secure)
+app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, res) => {
   try {
-    url = decodeURIComponent(url).trim();
-    const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
-    if (urlMatch) url = urlMatch[0].trim();
-    if (url.startsWith('//')) url = 'https:' + url;
+    const { 
+      userId, 
+      credits, 
+      razorpay_order_id, 
+      razorpay_payment_id, 
+      razorpay_signature 
+    } = req.body;
 
-    if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
-      return res.json({ success: true, imageUrl: url });
-    }
-
-    let finalUrl = url;
-    let pageHtml = '';
-
-    try {
-      const response = await axios.get(url, {
-        maxRedirects: 5,
-        timeout: 9000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9'
-        }
+    if (!userId || !credits || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Payment verification failed: Details missing hain.' 
       });
-      finalUrl = response.request?.res?.responseUrl || url;
-      pageHtml = typeof response.data === 'string' ? response.data : '';
-    } catch (e) {
-      console.warn("Direct page fetch failed:", e.message);
     }
 
-    let extractedImage = null;
+    // SHA256 Signature Verification
+    const bodyData = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac('sha256', RAZORPAY_KEY_SECRET)
+      .update(bodyData.toString())
+      .digest('hex');
 
-    const asinMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-    if ((finalUrl.includes('amazon') || url.includes('amzn')) && asinMatch && asinMatch[1]) {
-      extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
+    if (expectedSignature !== razorpay_signature) {
+      console.warn(`🚨 Fake payment attempt blocked for user: ${userId}`);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid payment signature. Verification failed.' 
+      });
     }
 
-    if (!extractedImage && pageHtml) {
-      const ogMatch = pageHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
-                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
-                      pageHtml.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i) ||
-                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']twitter:image["']/i);
-
-      if (ogMatch && ogMatch[1]) {
-        let img = ogMatch[1].trim();
-        if (img.startsWith('//')) img = 'https:' + img;
-        if (!img.toLowerCase().includes('logo') && !img.endsWith('.svg')) {
-          extractedImage = img;
-        }
-      }
+    // User lookup
+    let user = null;
+    if (mongoose.isValidObjectId(userId)) {
+      user = await User.findById(userId);
+    }
+    if (!user) {
+      user = await User.findOne({ phone: String(userId).trim() });
     }
 
-    if (!extractedImage && finalUrl.includes('meesho.com')) {
-      const meeshoMatch = finalUrl.match(/\/p\/([a-zA-Z0-9]+)/i);
-      if (meeshoMatch && meeshoMatch[1]) {
-        try {
-          const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            timeout: 6000
-          });
-          const pData = meeshoRes.data;
-          if (pData?.images?.length > 0) extractedImage = pData.images[0];
-          else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
-        } catch (e) {}
-      }
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User record nahi mila.' });
     }
 
-    if (!extractedImage) {
-      try {
-        const jinaRes = await axios.get(`https://r.jina.ai/${finalUrl}`, { timeout: 8000 });
-        const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
-        const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
-        if (imgMatches && imgMatches.length > 0) {
-          for (const m of imgMatches) {
-            const singleUrl = m.match(/\((https?:\/\/[^\s\)]+)\)/)[1];
-            const lower = singleUrl.toLowerCase();
-            if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.endsWith('.svg')) {
-              extractedImage = singleUrl;
-              break;
-            }
-          }
-        }
-      } catch (e) {}
+    if (!user.processedTransactions) {
+      user.processedTransactions = [];
     }
 
-    if (extractedImage) {
-      return res.json({ success: true, imageUrl: extractedImage });
+    // Replay attack prevention (Duplicate check)
+    if (user.processedTransactions.includes(razorpay_payment_id)) {
+      return res.json({ 
+        success: true, 
+        credits: user.credits, 
+        message: 'Credits pehle hi jud chuke hain.' 
+      });
     }
 
-    return res.status(404).json({ success: false, message: 'इस लिंक से फोटो नहीं मिल पाई। कृपया फोटो सीधे अपलोड करें।' });
+    const addedCredits = Number(credits);
+    user.credits = (user.credits || 0) + addedCredits;
+    user.processedTransactions.push(razorpay_payment_id);
+    await user.save();
+
+    console.log(`✅ Payment Verified: ${razorpay_payment_id} | +${addedCredits} Credits to ${user.phone}`);
+
+    return res.json({ 
+      success: true, 
+      message: `${addedCredits} credits successfully add ho gaye!`,
+      credits: user.credits 
+    });
+
   } catch (err) {
-    return res.status(500).json({ success: false, message: 'URL प्रोसेस करने में सर्वर एरर आया।' });
+    console.error('Payment Verification Error:', err);
+    return res.status(500).json({ success: false, message: 'Server verification error' });
   }
 });
 
 // ==========================================
-// 👤 4. AUTHENTICATION & CLOUD PROFILE APIS
+// 👤 5. AUTHENTICATION & PROFILE APIS
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -643,15 +513,184 @@ app.post('/api/user/reward-ad', async (req, res) => {
   }
 });
 
-app.post('/api/buy-credits', (req, res) => {
-  return res.json({
-    success: false,
-    message: "Google Play In-App Billing is active. Please purchase directly from the app."
-  });
+// ==========================================
+// 🛍️ 6. SCRAPER API
+// ==========================================
+app.post('/api/extract-image', async (req, res) => {
+  let { url } = req.body;
+  if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
+
+  try {
+    url = decodeURIComponent(url).trim();
+    const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
+    if (urlMatch) url = urlMatch[0].trim();
+    if (url.startsWith('//')) url = 'https:' + url;
+
+    if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
+      return res.json({ success: true, imageUrl: url });
+    }
+
+    let finalUrl = url;
+    let pageHtml = '';
+
+    try {
+      const response = await axios.get(url, {
+        maxRedirects: 5,
+        timeout: 9000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+      finalUrl = response.request?.res?.responseUrl || url;
+      pageHtml = typeof response.data === 'string' ? response.data : '';
+    } catch (e) {
+      console.warn("Direct page fetch failed:", e.message);
+    }
+
+    let extractedImage = null;
+
+    const asinMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if ((finalUrl.includes('amazon') || url.includes('amzn')) && asinMatch && asinMatch[1]) {
+      extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
+    }
+
+    if (!extractedImage && pageHtml) {
+      const ogMatch = pageHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
+                      pageHtml.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']twitter:image["']/i);
+
+      if (ogMatch && ogMatch[1]) {
+        let img = ogMatch[1].trim();
+        if (img.startsWith('//')) img = 'https:' + img;
+        if (!img.toLowerCase().includes('logo') && !img.endsWith('.svg')) {
+          extractedImage = img;
+        }
+      }
+    }
+
+    if (!extractedImage && finalUrl.includes('meesho.com')) {
+      const meeshoMatch = finalUrl.match(/\/p\/([a-zA-Z0-9]+)/i);
+      if (meeshoMatch && meeshoMatch[1]) {
+        try {
+          const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 6000
+          });
+          const pData = meeshoRes.data;
+          if (pData?.images?.length > 0) extractedImage = pData.images[0];
+          else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
+        } catch (e) {}
+      }
+    }
+
+    if (!extractedImage) {
+      try {
+        const jinaRes = await axios.get(`https://r.jina.ai/${finalUrl}`, { timeout: 8000 });
+        const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
+        const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
+        if (imgMatches && imgMatches.length > 0) {
+          for (const m of imgMatches) {
+            const singleUrl = m.match(/\((https?:\/\/[^\s\)]+)\)/)[1];
+            const lower = singleUrl.toLowerCase();
+            if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.endsWith('.svg')) {
+              extractedImage = singleUrl;
+              break;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (extractedImage) {
+      return res.json({ success: true, imageUrl: extractedImage });
+    }
+
+    return res.status(404).json({ success: false, message: 'इस लिंक से फोटो नहीं मिल पाई। कृपया फोटो सीधे अपलोड करें।' });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'URL प्रोसेस करने में सर्वर एरर आया।' });
+  }
 });
 
 // ==========================================
-// 👗 6. TRY-ON PIPELINE (HF IDM-VTON + Cloud Quota)
+// 👗 7. UNIVERSAL CATEGORY & ASPECT RATIO
+// ==========================================
+function detectGarmentCategory(urlOrText) {
+  if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) {
+    return null; // Direct image upload fallback to aspect ratio
+  }
+
+  const text = urlOrText.toLowerCase();
+
+  const fullBodyKeywords = [
+    'saree', 'sari', 'sadi', 'dress', 'frock', 'gown', 'jumpsuit', 'maxi', 
+    'suit', 'kurti', 'co-ord', 'coord', 'set', 'lehenga', 'anarkali', 'robe', 
+    'choli', 'combo', 'tracksuit'
+  ];
+  if (fullBodyKeywords.some(k => text.includes(k))) {
+    return 'one-pieces';
+  }
+
+  const bottomKeywords = [
+    'jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 
+    'legging', 'lower', 'trackpant', 'cargo', 'palazzo', 'pyjama'
+  ];
+  if (bottomKeywords.some(k => text.includes(k))) {
+    return 'bottoms';
+  }
+
+  const topKeywords = [
+    'shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 
+    'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'
+  ];
+  if (topKeywords.some(k => text.includes(k))) {
+    return 'tops';
+  }
+
+  return null;
+}
+
+// Pure Buffer Aspect Ratio Detector (No Sharp / No C++ required)
+function getImageAspectRatio(base64Str) {
+  try {
+    if (!base64Str || typeof base64Str !== 'string') return 1.0;
+    const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,')[1] : base64Str;
+    const buffer = Buffer.from(clean.slice(0, 4000), 'base64');
+
+    // PNG Header Check
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+      const width = buffer.readUInt32BE(16);
+      const height = buffer.readUInt32BE(20);
+      return height / width;
+    }
+
+    // JPEG Header Check
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+      let i = 2;
+      while (i < buffer.length - 8) {
+        if (buffer[i] === 0xFF) {
+          const marker = buffer[i + 1];
+          if (marker >= 0xC0 && marker <= 0xC3) {
+            const height = buffer.readUInt16BE(i + 5);
+            const width = buffer.readUInt16BE(i + 7);
+            return height / width;
+          }
+          i += 2 + buffer.readUInt16BE(i + 2);
+        } else {
+          i++;
+        }
+      }
+    }
+  } catch (e) {
+    return 1.0;
+  }
+  return 1.0;
+}
+
+// ==========================================
+// 👗 8. TRY-ON PIPELINE (HF IDM-VTON)
 // ==========================================
 async function convertOutputToBase64(rawOutput) {
   try {
@@ -727,10 +766,10 @@ app.post('/api/tryon', async (req, res) => {
     const detectedCategory = detectGarmentCategory(clothingLink || "");
     let finalCategory = category || detectedCategory;
 
-    // Direct Image Upload (bina link ke): aspect ratio se category decide hogi
+    // Direct Image Upload: auto-detect by ratio
     if (!finalCategory) {
       if (ratio >= 1.35) {
-        finalCategory = 'one-pieces'; // Lambi photo = Saree, Gown, Maxi
+        finalCategory = 'one-pieces';
       } else {
         finalCategory = 'tops';
       }
@@ -738,7 +777,6 @@ app.post('/api/tryon', async (req, res) => {
 
     let targetPrompt = "A neat waist-length upper body shirt, top, t-shirt, short kurta, natural waistline outfit";
 
-    // Agar category one-pieces ho YA tall image ratio ho (aur explicit tops na ho)
     if (finalCategory === 'one-pieces' || (ratio >= 1.45 && finalCategory !== 'tops' && finalCategory !== 'bottoms')) {
       targetPrompt = "A realistic full length one-piece saree, dress, frock, kurti, gown, full body outfit";
       finalCategory = 'one-pieces';
@@ -768,7 +806,7 @@ app.post('/api/tryon', async (req, res) => {
       prepareGradioFile(clothingImage),
       targetPrompt,
       true,  // is_checked (auto mask)
-      false, // is_checked_crop (original framing safe)
+      false, // is_checked_crop (keep natural framing safe)
       30,    // denoise_steps
       42     // seed
     ]);
@@ -802,7 +840,7 @@ app.post('/api/tryon', async (req, res) => {
 });
 
 // ==========================================
-// 🔌 7. PORT LISTENER
+// 🔌 9. PORT LISTENER
 // ==========================================
 const PORT = process.env.PORT || 3000;
 
