@@ -212,60 +212,137 @@ app.post('/api/admin/add-cloth', async (req, res) => {
   }
 });
 
-// 🔄 PAYMENT LINK SUCCESS CALLBACK & CREDIT UPDATE
+// ==========================================
+// 💳 4. SECURE RAZORPAY PAYMENT SYSTEM
+// ==========================================
+
+// 🚀 1. CREATE HOSTED PAYMENT LINK (UPI, GPay, PhonePe, Paytm, QR, Cards)
+app.post('/api/payment/create-link', async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(500).json({ success: false, message: 'Razorpay keys backend me configure nahi hain.' });
+    }
+
+    const { amount, userId, planId, phone } = req.body;
+
+    if (!amount || !userId) {
+      return res.status(400).json({ success: false, message: 'Amount aur User ID zaroori hain' });
+    }
+
+    let customerData = undefined;
+    if (phone) {
+      const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
+      if (cleanPhone.length === 10) {
+        customerData = {
+          contact: `+91${cleanPhone}`
+        };
+      }
+    }
+
+    const paymentLink = await razorpay.paymentLink.create({
+      amount: Math.round(Number(amount) * 100), // Convert ₹ to Paise (₹49 = 4900)
+      currency: 'INR',
+      accept_partial: false,
+      description: `${planId || 'credits'} - FitOut AI Try-On Credits`,
+      customer: customerData,
+      notify: {
+        sms: false,
+        email: false
+      },
+      reminder_enable: false,
+      notes: {
+        userId: String(userId),
+        planId: String(planId || 'credits')
+      },
+      callback_url: `https://fitout-backend.onrender.com/api/payment/callback?userId=${encodeURIComponent(userId)}&amount=${amount}`,
+      callback_method: 'get'
+    });
+
+    console.log(`🔗 Payment Link Created: ${paymentLink.short_url} for user: ${userId}`);
+
+    return res.json({
+      success: true,
+      paymentUrl: paymentLink.short_url,
+      paymentId: paymentLink.id
+    });
+  } catch (error) {
+    console.error('Razorpay Create Payment Link Error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: error.error?.description || error.message || 'Payment link generate nahi ho saka.' 
+    });
+  }
+});
+
+// 🔄 2. PAYMENT LINK SUCCESS CALLBACK & CREDIT UPDATE
 app.get('/api/payment/callback', async (req, res) => {
   try {
     const { userId, amount, razorpay_payment_id, razorpay_payment_link_status } = req.query;
 
-    // Credits calculate karein (₹49 = 10, ₹99 = 30)
+    // Credits calculation: ₹49 = 10, ₹99 = 30
     const creditsToAdd = Number(amount) >= 99 ? 30 : 10;
 
     if (razorpay_payment_link_status === 'paid' || razorpay_payment_id) {
-      // MongoDB mein credits add karein
-      const user = await User.findOneAndUpdate(
-        { $or: [{ phone: userId }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] },
-        { $inc: { credits: creditsToAdd } },
-        { new: true }
-      );
+      let user = null;
+      if (mongoose.isValidObjectId(userId)) {
+        user = await User.findById(userId);
+      }
+      if (!user) {
+        user = await User.findOne({ phone: String(userId).trim() });
+      }
 
-      // Mobile browser par success page dikhayein
-      res.send(`
+      if (user) {
+        if (!user.processedTransactions) user.processedTransactions = [];
+
+        // Duplicate replay protection
+        if (!user.processedTransactions.includes(razorpay_payment_id)) {
+          user.credits = (user.credits || 0) + creditsToAdd;
+          if (razorpay_payment_id) {
+            user.processedTransactions.push(razorpay_payment_id);
+          }
+          await user.save();
+          console.log(`✅ Payment Link Success: +${creditsToAdd} Credits added to ${user.phone}`);
+        }
+      }
+
+      // Clean mobile browser confirmation page
+      return res.send(`
         <!DOCTYPE html>
         <html>
         <head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>Payment Successful</title>
           <style>
-            body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #FAF7F2; }
-            .card { background: white; border-radius: 20px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
-            h2 { color: #16a34a; }
-            p { color: #555; }
-            .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: #7c3aed; color: white; text-decoration: none; border-radius: 12px; font-weight: bold; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #FAF7F2; }
+            .card { background: white; border-radius: 24px; padding: 32px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); max-width: 360px; margin: 0 auto; }
+            .icon { width: 56px; height: 56px; background: #DCFCE7; color: #16A34A; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; margin: 0 auto 16px; font-weight: bold; }
+            h2 { color: #1E293B; margin: 0 0 8px; font-size: 20px; font-weight: 800; }
+            p { color: #64748B; font-size: 14px; margin: 6px 0; line-height: 1.5; }
+            .badge { display: inline-block; background: #F3E8FF; color: #7E22CE; font-weight: 800; padding: 6px 14px; border-radius: 99px; margin: 12px 0; font-size: 13px; }
+            .note { font-size: 12px; color: #94A3B8; margin-top: 20px; }
           </style>
         </head>
         <body>
           <div class="card">
-            <h2>🎉 Payment Successful!</h2>
-            <p><strong>+${creditsToAdd} Credits</strong> aapke FitOut AI account mein add ho gaye hain.</p>
-            <p>Aap is screen ko band karke app par wapas ja sakte hain.</p>
+            <div class="icon">✓</div>
+            <h2>Payment Successful!</h2>
+            <div class="badge">+${creditsToAdd} Credits Added</div>
+            <p>Aapke FitOut AI account me credits successfully jud chuke hain.</p>
+            <p class="note">Aap is page ko band karke FitOut AI app me wapas ja sakte hain.</p>
           </div>
         </body>
         </html>
       `);
     } else {
-      res.send(`<h2>Payment Pending ya Incomplete hai. Kripya app me wapas jayein.</h2>`);
+      return res.send(`<h2>Payment Pending ya Incomplete hai. Kripya app me wapas jayein.</h2>`);
     }
   } catch (error) {
     console.error("Callback Error:", error);
-    res.status(500).send("Internal Server Error");
+    return res.status(500).send("Internal Server Error");
   }
 });
 
-// ==========================================
-// 💳 4. SECURE RAZORPAY PAYMENT SYSTEM
-// ==========================================
-
-// 1. Create Razorpay Order
+// 3. Create Standard Razorpay Order (Fallback)
 app.post('/api/payment/create-order', async (req, res) => {
   try {
     if (!razorpay) {
@@ -279,7 +356,7 @@ app.post('/api/payment/create-order', async (req, res) => {
     }
 
     const options = {
-      amount: Math.round(Number(amount) * 100), // Convert ₹ to Paise (₹49 = 4900 paise)
+      amount: Math.round(Number(amount) * 100),
       currency: 'INR',
       receipt: `rcpt_${Date.now()}_${String(userId).slice(-4)}`,
       notes: { 
@@ -303,7 +380,7 @@ app.post('/api/payment/create-order', async (req, res) => {
   }
 });
 
-// 2. Cryptographic Signature Verification & Credit Addition (Secure)
+// 4. Cryptographic Signature Verification & Credit Addition (Secure)
 app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, res) => {
   try {
     const { 
@@ -321,7 +398,6 @@ app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, r
       });
     }
 
-    // SHA256 Signature Verification
     const bodyData = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac('sha256', RAZORPAY_KEY_SECRET)
@@ -336,7 +412,6 @@ app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, r
       });
     }
 
-    // User lookup
     let user = null;
     if (mongoose.isValidObjectId(userId)) {
       user = await User.findById(userId);
@@ -353,7 +428,6 @@ app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, r
       user.processedTransactions = [];
     }
 
-    // Replay attack prevention (Duplicate check)
     if (user.processedTransactions.includes(razorpay_payment_id)) {
       return res.json({ 
         success: true, 
@@ -371,7 +445,7 @@ app.post(['/api/user/add-credits', '/api/payment/verify-payment'], async (req, r
 
     return res.json({ 
       success: true, 
-      message: `${addedCredits} credits successfully add ho gaye!`,
+      message: `${addedCredits} credits successfully add ho gaye!`, 
       credits: user.credits 
     });
 
@@ -668,7 +742,7 @@ app.post('/api/extract-image', async (req, res) => {
 // ==========================================
 function detectGarmentCategory(urlOrText) {
   if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) {
-    return null; // Direct image upload fallback to aspect ratio
+    return null;
   }
 
   const text = urlOrText.toLowerCase();
@@ -701,21 +775,18 @@ function detectGarmentCategory(urlOrText) {
   return null;
 }
 
-// Pure Buffer Aspect Ratio Detector (No Sharp / No C++ required)
 function getImageAspectRatio(base64Str) {
   try {
     if (!base64Str || typeof base64Str !== 'string') return 1.0;
     const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,')[1] : base64Str;
     const buffer = Buffer.from(clean.slice(0, 4000), 'base64');
 
-    // PNG Header Check
     if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
       const width = buffer.readUInt32BE(16);
       const height = buffer.readUInt32BE(20);
       return height / width;
     }
 
-    // JPEG Header Check
     if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
       let i = 2;
       while (i < buffer.length - 8) {
@@ -810,12 +881,10 @@ app.post('/api/tryon', async (req, res) => {
       }
     }
 
-    // 🧠 Dynamic Aspect Ratio & Category Detection
     const ratio = getImageAspectRatio(clothingImage);
     const detectedCategory = detectGarmentCategory(clothingLink || "");
     let finalCategory = category || detectedCategory;
 
-    // Direct Image Upload: auto-detect by ratio
     if (!finalCategory) {
       if (ratio >= 1.35) {
         finalCategory = 'one-pieces';
