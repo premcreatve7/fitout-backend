@@ -21,7 +21,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
 }));
 
-// Webhook ke liye raw body zaroori hoti hai signature verify karne ke liye
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -30,6 +29,9 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || "fitout_webhook_2026";
 
+// ==========================================
+// 💳 1. RAZORPAY INITIALIZATION
+// ==========================================
 let razorpay = null;
 if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET) {
   razorpay = new Razorpay({
@@ -40,7 +42,7 @@ if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET) {
 }
 
 // ==========================================
-// 🗄️ MONGODB CONNECTION & SCHEMAS
+// 🗄️ 2. MONGODB ATLAS & SCHEMAS
 // ==========================================
 const MONGO_URI = process.env.MONGO_URI;
 if (MONGO_URI) {
@@ -53,14 +55,14 @@ function getTodayString() {
   return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
 }
 
-// User Schema (Strict Free-Credit & Ad Tracking in DB)
+// User Schema (Strict 1 Welcome Credit & DB-backed 24h Ad Tracking)
 const userSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true },
   name: { type: String, default: 'FitOut User' },
-  credits: { type: Number, default: 1 }, // ✅ Sirf 1 Free Credit milega signup par
+  credits: { type: Number, default: 1 }, // ✅ Sirf 1 Free Welcome Credit
   has_claimed_welcome_credit: { type: Boolean, default: true },
-  last_ad_reward_date: { type: String, default: '' }, // ✅ Database me track hoga taaki data clear se bypass na ho
+  last_ad_reward_date: { type: String, default: '' }, // ✅ 24 ghante me 1 baar DB level check
   ads_watched_today: { type: Number, default: 0 },
   processedTransactions: { type: [String], default: [] }, // ✅ Replay prevention
   created_at: { type: Date, default: Date.now }
@@ -68,7 +70,8 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
-const Catalog = mongoose.model('Catalog', new mongoose.Schema({
+// Catalog Schema
+const catalogSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
   category: String,
@@ -76,19 +79,129 @@ const Catalog = mongoose.model('Catalog', new mongoose.Schema({
   imageUrl: String,
   affiliateUrl: String,
   created_at: { type: Date, default: Date.now }
-}));
+});
+
+const Catalog = mongoose.model('Catalog', catalogSchema);
 
 // ==========================================
-// 💳 RAZORPAY PAYMENT LINK & WEBHOOK (Permanent Fix)
+// 👗 3. HANDPICKED CATALOG & SEEDING (RESTORED)
 // ==========================================
+const INITIAL_CLOTHES = [
+  {
+    id: 'hp_01',
+    title: 'Yellow Floral Top',
+    category: 'tops',
+    tag: 'Trending',
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h73/ha5/16407570612254/-473Wx593H-461161841-yellow-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/tFndB6q'
+  },
+  {
+    id: 'hp_02',
+    title: 'Casual Printed Wear',
+    category: 'tops',
+    tag: 'Hot',
+    imageUrl: 'https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/productimage/2019/9/10/956f6d80-09df-44b3-b881-d826bb3eaaae1568112535637-1.jpg',
+    affiliateUrl: 'https://myntr.it/oCgMAHo'
+  },
+  {
+    id: 'hp_03',
+    title: 'Yellow Kurti / Tunic',
+    category: 'tops',
+    tag: 'Popular',
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/20200731/AjbB/5f2320517cdb8ca2cf88859d/-473Wx593H-461343341-yellow-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/iyyaADw'
+  },
+  {
+    id: 'hp_04',
+    title: 'Classic White Shirt / Top',
+    category: 'tops',
+    tag: 'Best Seller',
+    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h07/hfa/14565431836702/-473Wx593H-441016995-white-MODEL.jpg',
+    affiliateUrl: 'https://ajiio.in/x1YkKK0'
+  }
+];
 
-// 1. Create Payment Link
+async function initCatalog() {
+  try {
+    const count = await Catalog.countDocuments();
+    if (count === 0) {
+      await Catalog.insertMany(INITIAL_CLOTHES);
+      console.log('📦 Initial catalog seeded to MongoDB.');
+    }
+  } catch (e) {
+    console.error('Catalog seed error:', e);
+  }
+}
+mongoose.connection.once('open', initCatalog);
+
+app.get('/api/handpicked-clothes', async (req, res) => {
+  try {
+    let clothes = await Catalog.find().sort({ created_at: -1 });
+    if (!clothes || clothes.length === 0) {
+      clothes = INITIAL_CLOTHES;
+    }
+    res.json({ success: true, clothes });
+  } catch (err) {
+    res.json({ success: true, clothes: INITIAL_CLOTHES });
+  }
+});
+
+const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET || "fitout_admin_secret_786";
+
+app.post('/api/admin/add-cloth', async (req, res) => {
+  const { secretKey, title, amazonUrl, affiliateUrl, imageUrl, category, tag } = req.body;
+
+  if (secretKey !== ADMIN_SECRET_KEY) {
+    return res.status(403).json({ success: false, error: "Unauthorized: Invalid Secret Key" });
+  }
+
+  if (!title || (!amazonUrl && !imageUrl)) {
+    return res.status(400).json({ success: false, error: "Title and Product Link/Image are required." });
+  }
+
+  try {
+    let finalImageUrl = imageUrl;
+    if (!finalImageUrl && amazonUrl) {
+      const asinMatch = amazonUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+      if (asinMatch && asinMatch[1]) {
+        finalImageUrl = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
+      } else {
+        finalImageUrl = amazonUrl;
+      }
+    }
+
+    const detected = detectGarmentCategory(title);
+
+    const newCloth = new Catalog({
+      id: 'hp_' + Date.now(),
+      title: title.trim(),
+      category: category || detected || 'tops',
+      tag: tag || 'Trending',
+      imageUrl: finalImageUrl,
+      affiliateUrl: affiliateUrl || amazonUrl || '#'
+    });
+
+    await newCloth.save();
+
+    return res.json({ 
+      success: true, 
+      message: "Product added to catalog successfully!", 
+      item: newCloth 
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to add cloth to catalog." });
+  }
+});
+
+// ==========================================
+// 💳 4. RAZORPAY PAYMENT LINK & WEBHOOK
+// ==========================================
 app.post('/api/payment/create-link', async (req, res) => {
   try {
-    if (!razorpay) return res.status(500).json({ success: false, message: 'Razorpay configured nahi hai.' });
+    if (!razorpay) return res.status(500).json({ success: false, message: 'Razorpay keys backend me configure nahi hain.' });
 
     const { amount, userId, planId, phone } = req.body;
-    if (!amount || !userId) return res.status(400).json({ success: false, message: 'Details missing hain' });
+    if (!amount || !userId) return res.status(400).json({ success: false, message: 'Amount aur User ID zaroori hain' });
 
     let customerData = undefined;
     if (phone) {
@@ -120,8 +233,7 @@ app.post('/api/payment/create-link', async (req, res) => {
   }
 });
 
-// 2. Razorpay Webhook (SERVER-TO-SERVER GUARANTEE)
-// Agar user payment ke turant baad app ya browser band kar de, toh bhi credits add honge
+// 🚀 Razorpay Webhook (Direct Server-to-Server Credit Guarantee)
 app.post('/api/payment/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
@@ -157,7 +269,7 @@ app.post('/api/payment/webhook', async (req, res) => {
             user.credits = (user.credits || 0) + creditsToAdd;
             if (paymentId) user.processedTransactions.push(paymentId);
             await user.save();
-            console.log(`🚀 WEBHOOK SUCCESS: +${creditsToAdd} Credits added to user ${user.phone}`);
+            console.log(`🚀 WEBHOOK SUCCESS: +${creditsToAdd} Credits added to ${user.phone}`);
           }
         }
       }
@@ -170,7 +282,7 @@ app.post('/api/payment/webhook', async (req, res) => {
   }
 });
 
-// 3. Browser Return Callback
+// Browser Return Callback
 app.get('/api/payment/callback', async (req, res) => {
   try {
     const { userId, amount, razorpay_payment_id, razorpay_payment_link_status } = req.query;
@@ -224,10 +336,26 @@ app.get('/api/payment/callback', async (req, res) => {
   }
 });
 
-// ==========================================
-// 👤 AUTHENTICATION (NO DAILY RESET - STRICT 1 CREDIT ON SIGNUP)
-// ==========================================
+// Fallback Standard Razorpay Order API
+app.post('/api/payment/create-order', async (req, res) => {
+  try {
+    if (!razorpay) return res.status(500).json({ success: false, message: 'Razorpay keys missing.' });
+    const { amount, planId, userId } = req.body;
+    const order = await razorpay.orders.create({
+      amount: Math.round(Number(amount) * 100),
+      currency: 'INR',
+      receipt: `rcpt_${Date.now()}_${String(userId).slice(-4)}`,
+      notes: { userId: String(userId), planId: planId || 'credits_pack' }
+    });
+    return res.json({ success: true, orderId: order.id, amount: order.amount, currency: order.currency, keyId: RAZORPAY_KEY_ID });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Order generate nahi ho saka.' });
+  }
+});
 
+// ==========================================
+// 👤 5. AUTHENTICATION & PROFILE APIS
+// ==========================================
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { phone, password, name } = req.body;
@@ -244,7 +372,7 @@ app.post('/api/auth/register', async (req, res) => {
       phone: cleanPhone,
       password: hashedPassword,
       name: name?.trim() || `User_${cleanPhone.slice(-4)}`,
-      credits: 1, // ✅ Har naye number ko sirf 1 free credit
+      credits: 1, // ✅ Har naye number ko sirf 1 Free Credit
       has_claimed_welcome_credit: true,
       ads_watched_today: 0,
       last_ad_reward_date: ''
@@ -279,7 +407,7 @@ app.post('/api/auth/login', async (req, res) => {
       if (!isMatch) return res.status(401).json({ success: false, message: 'Galat password!' });
     }
 
-    // NOTE: Daily reset poori tarah hata diya hai. Database me jo credits hain wahi rahenge!
+    // Daily reset hata diya gaya hai - Database me jo original balance hai wahi aayega
     const token = jwt.sign({ id: user._id, phone: user.phone }, JWT_SECRET, { expiresIn: '60d' });
     return res.json({
       success: true,
@@ -316,8 +444,21 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { phone, newPassword } = req.body;
+    const user = await User.findOne({ phone: phone?.trim() });
+    if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    return res.json({ success: true, message: 'Password badal diya gaya hai.' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Password reset error' });
+  }
+});
+
 // ==========================================
-// 📺 24-HOUR AD REWARD API (Strict MongoDB-Backed)
+// 📺 6. 24-HOUR AD REWARD API (DB-Backed)
 // ==========================================
 app.post('/api/user/reward-ad', async (req, res) => {
   try {
@@ -330,7 +471,6 @@ app.post('/api/user/reward-ad', async (req, res) => {
 
     const today = getTodayString();
 
-    // Agar aaj ka reward pehle hi le chuka hai
     if (user.last_ad_reward_date === today) {
       return res.status(400).json({ 
         success: false, 
@@ -340,7 +480,6 @@ app.post('/api/user/reward-ad', async (req, res) => {
 
     user.ads_watched_today = (user.ads_watched_today || 0) + 1;
 
-    // 3 Ads complete hone par 1 credit milega
     if (user.ads_watched_today >= 3) {
       user.credits = (user.credits || 0) + 1;
       user.last_ad_reward_date = today;
@@ -368,8 +507,125 @@ app.post('/api/user/reward-ad', async (req, res) => {
 });
 
 // ==========================================
-// 👗 TRY-ON PIPELINE (Safe: Deduct ONLY on Success)
+// 🛍️ 7. E-COMMERCE SCRAPER (RESTORED)
 // ==========================================
+app.post('/api/extract-image', async (req, res) => {
+  let { url } = req.body;
+  if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
+
+  try {
+    url = decodeURIComponent(url).trim();
+    const urlMatch = url.match(/(https?:\/\/[^\s]+)/i);
+    if (urlMatch) url = urlMatch[0].trim();
+    if (url.startsWith('//')) url = 'https:' + url;
+
+    if (url.match(/\.(jpeg|jpg|png|webp|avif)($|\?)/i)) {
+      return res.json({ success: true, imageUrl: url });
+    }
+
+    let finalUrl = url;
+    let pageHtml = '';
+
+    try {
+      const response = await axios.get(url, {
+        maxRedirects: 5,
+        timeout: 9000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+      finalUrl = response.request?.res?.responseUrl || url;
+      pageHtml = typeof response.data === 'string' ? response.data : '';
+    } catch (e) {
+      console.warn("Direct page fetch failed:", e.message);
+    }
+
+    let extractedImage = null;
+
+    const asinMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if ((finalUrl.includes('amazon') || url.includes('amzn')) && asinMatch && asinMatch[1]) {
+      extractedImage = `https://images-na.ssl-images-amazon.com/images/P/${asinMatch[1]}.01.MAIN._SCRMZZZZZZ_.jpg`;
+    }
+
+    if (!extractedImage && pageHtml) {
+      const ogMatch = pageHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
+                      pageHtml.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i) ||
+                      pageHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']twitter:image["']/i);
+
+      if (ogMatch && ogMatch[1]) {
+        let img = ogMatch[1].trim();
+        if (img.startsWith('//')) img = 'https:' + img;
+        if (!img.toLowerCase().includes('logo') && !img.endsWith('.svg')) {
+          extractedImage = img;
+        }
+      }
+    }
+
+    if (!extractedImage && finalUrl.includes('meesho.com')) {
+      const meeshoMatch = finalUrl.match(/\/p\/([a-zA-Z0-9]+)/i);
+      if (meeshoMatch && meeshoMatch[1]) {
+        try {
+          const meeshoRes = await axios.get(`https://www.meesho.com/api/v1/products/${meeshoMatch[1]}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 6000
+          });
+          const pData = meeshoRes.data;
+          if (pData?.images?.length > 0) extractedImage = pData.images[0];
+          else if (pData?.product_images?.length > 0) extractedImage = pData.product_images[0].url;
+        } catch (e) {}
+      }
+    }
+
+    if (!extractedImage) {
+      try {
+        const jinaRes = await axios.get(`https://r.jina.ai/${finalUrl}`, { timeout: 8000 });
+        const mdText = typeof jinaRes.data === 'string' ? jinaRes.data : JSON.stringify(jinaRes.data);
+        const imgMatches = mdText.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/gi);
+        if (imgMatches && imgMatches.length > 0) {
+          for (const m of imgMatches) {
+            const singleUrl = m.match(/\((https?:\/\/[^\s\)]+)\)/)[1];
+            const lower = singleUrl.toLowerCase();
+            if (!lower.includes('logo') && !lower.includes('icon') && !lower.includes('badge') && !lower.endsWith('.svg')) {
+              extractedImage = singleUrl;
+              break;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (extractedImage) {
+      return res.json({ success: true, imageUrl: extractedImage });
+    }
+
+    return res.status(404).json({ success: false, message: 'इस लिंक से फोटो नहीं मिल पाई। कृपया फोटो सीधे अपलोड करें।' });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'URL प्रोसेस करने में सर्वर एरर आया।' });
+  }
+});
+
+// ==========================================
+// 👗 8. UNIVERSAL CATEGORY & TRY-ON PIPELINE (SAFE DEDUCTION)
+// ==========================================
+function detectGarmentCategory(urlOrText) {
+  if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) return null;
+  const text = urlOrText.toLowerCase();
+
+  const fullBodyKeywords = ['saree', 'sari', 'sadi', 'dress', 'frock', 'gown', 'jumpsuit', 'maxi', 'suit', 'kurti', 'co-ord', 'coord', 'set', 'lehenga', 'anarkali', 'robe', 'choli', 'combo', 'tracksuit'];
+  if (fullBodyKeywords.some(k => text.includes(k))) return 'one-pieces';
+
+  const bottomKeywords = ['jeans', 'pant', 'trouser', 'shorts', 'skirt', 'jogger', 'legging', 'lower', 'trackpant', 'cargo', 'palazzo', 'pyjama'];
+  if (bottomKeywords.some(k => text.includes(k))) return 'bottoms';
+
+  const topKeywords = ['shirt', 't-shirt', 'tshirt', 'top', 'crop', 'hoodie', 'jacket', 'blazer', 'sweater', 'blouse', 'shrug', 'kurta', 'tunic', 'tee', 'polo'];
+  if (topKeywords.some(k => text.includes(k))) return 'tops';
+
+  return null;
+}
+
 function getImageAspectRatio(base64Str) {
   try {
     if (!base64Str || typeof base64Str !== 'string') return 1.0;
@@ -411,7 +667,6 @@ app.post('/api/tryon', async (req, res) => {
       $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
     });
 
-    // 1. Credit Check: Kam se kam 1 credit hona chahiye
     if (!user || (user.credits || 0) < 1) {
       return res.status(403).json({
         success: false,
@@ -420,7 +675,9 @@ app.post('/api/tryon', async (req, res) => {
     }
 
     const ratio = getImageAspectRatio(clothingImage);
-    let finalCategory = category || (ratio >= 1.35 ? 'one-pieces' : 'tops');
+    const detectedCategory = detectGarmentCategory(clothingLink || "");
+    let finalCategory = category || detectedCategory || (ratio >= 1.35 ? 'one-pieces' : 'tops');
+
     let targetPrompt = finalCategory === 'one-pieces' 
       ? "A realistic full length one-piece saree, dress, kurti, gown, full body outfit"
       : "A neat waist-length upper body shirt, top, t-shirt, short kurta outfit";
@@ -443,11 +700,10 @@ app.post('/api/tryon', async (req, res) => {
     const finalResultUrl = await convertOutputToBase64(result.data?.[0]);
 
     if (!finalResultUrl) {
-      // ⚠️ AI fail hua - Credit NAHI KATEGA
       throw new Error("AI output generate nahi ho paya. Credit safe hai.");
     }
 
-    // ✅ 2. Successful generation ke baad hi credit deduct hoga!
+    // ✅ Generation pass hone par hi credit deduct hoga
     user.credits = Math.max(0, user.credits - 1);
     await user.save();
     console.log(`✨ AI TryOn Success! 1 Credit Deducted. Remaining: ${user.credits} for ${user.phone}`);
@@ -455,30 +711,20 @@ app.post('/api/tryon', async (req, res) => {
     return res.json({
       success: true,
       resultImageUrl: finalResultUrl,
+      appliedCategory: finalCategory,
       remainingCredits: user.credits
     });
 
   } catch (error) {
     console.error("TryOn Error (No credit cut):", error.message);
-    // ⚠️ Agar processing me koi bhi error aaya, toh user ka credit bilkul safe rahega
     return res.status(500).json({ success: false, error: error.message || "AI processing fail ho gayi, credit nahi kata." });
   }
 });
 
-// App listen & helpers
-app.post('/api/auth/reset-password', async (req, res) => {
-  const { phone, newPassword } = req.body;
-  const user = await User.findOne({ phone: phone?.trim() });
-  if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
-  user.password = await bcrypt.hash(newPassword, 10);
-  await user.save();
-  res.json({ success: true, message: 'Password badal diya gaya hai.' });
-});
-
-app.get('/api/handpicked-clothes', async (req, res) => {
-  const clothes = await Catalog.find().sort({ created_at: -1 });
-  res.json({ success: true, clothes });
-});
-
+// ==========================================
+// 🔌 9. PORT LISTENER
+// ==========================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 FitOut Server Running on Port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 FitOut Server Running on Port ${PORT}`);
+});
