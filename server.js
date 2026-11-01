@@ -212,6 +212,55 @@ app.post('/api/admin/add-cloth', async (req, res) => {
   }
 });
 
+// 🔄 PAYMENT LINK SUCCESS CALLBACK & CREDIT UPDATE
+app.get('/api/payment/callback', async (req, res) => {
+  try {
+    const { userId, amount, razorpay_payment_id, razorpay_payment_link_status } = req.query;
+
+    // Credits calculate karein (₹49 = 10, ₹99 = 30)
+    const creditsToAdd = Number(amount) >= 99 ? 30 : 10;
+
+    if (razorpay_payment_link_status === 'paid' || razorpay_payment_id) {
+      // MongoDB mein credits add karein
+      const user = await User.findOneAndUpdate(
+        { $or: [{ phone: userId }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] },
+        { $inc: { credits: creditsToAdd } },
+        { new: true }
+      );
+
+      // Mobile browser par success page dikhayein
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Payment Successful</title>
+          <style>
+            body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #FAF7F2; }
+            .card { background: white; border-radius: 20px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+            h2 { color: #16a34a; }
+            p { color: #555; }
+            .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: #7c3aed; color: white; text-decoration: none; border-radius: 12px; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h2>🎉 Payment Successful!</h2>
+            <p><strong>+${creditsToAdd} Credits</strong> aapke FitOut AI account mein add ho gaye hain.</p>
+            <p>Aap is screen ko band karke app par wapas ja sakte hain.</p>
+          </div>
+        </body>
+        </html>
+      `);
+    } else {
+      res.send(`<h2>Payment Pending ya Incomplete hai. Kripya app me wapas jayein.</h2>`);
+    }
+  } catch (error) {
+    console.error("Callback Error:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ==========================================
 // 💳 4. SECURE RAZORPAY PAYMENT SYSTEM
 // ==========================================
