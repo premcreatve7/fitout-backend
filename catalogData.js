@@ -1,5 +1,5 @@
 const INITIAL_CLOTHES = [
-    {
+  {
     id: 'hp_05',
     title: 'Maxi Length Floral Print Gown Dress',
     category: 'one-pieces',
@@ -55,7 +55,7 @@ const INITIAL_CLOTHES = [
     imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h95/hf4/15540192903198/-473Wx593H-441033920-mustard-MODEL.jpg',
     affiliateUrl: 'https://ajiio.in/0wMfDLp'
   },
-{
+  {
     id: 'hp_12',
     title: 'W Women Charcoal Grey & Golden Satin Finish Floral Print Straight Kurti',
     category: 'one-pieces',
@@ -175,4 +175,6 @@ const INITIAL_CLOTHES = [
     imageUrl: 'https://assets.ajio.com/medias/sys_master/root/20200903/WiDC/5f509a4af997dd6918b4863f/-473Wx593H-461391721-green-MODEL.jpg',
     affiliateUrl: 'https://ajiio.in/zttVT7p'
   }
+];
+
 export default INITIAL_CLOTHES;
