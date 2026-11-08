@@ -1,4 +1,5 @@
-{
+const INITIAL_CLOTHES = [
+    {
     id: 'hp_05',
     title: 'Maxi Length Floral Print Gown Dress',
     category: 'one-pieces',
@@ -174,3 +175,4 @@
     imageUrl: 'https://assets.ajio.com/medias/sys_master/root/20200903/WiDC/5f509a4af997dd6918b4863f/-473Wx593H-461391721-green-MODEL.jpg',
     affiliateUrl: 'https://ajiio.in/zttVT7p'
   }
+export default INITIAL_CLOTHES;
