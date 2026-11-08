@@ -54,7 +54,7 @@ const INITIAL_CLOTHES = [
     tag: 'Popular',
     imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h95/hf4/15540192903198/-473Wx593H-441033920-mustard-MODEL.jpg',
     affiliateUrl: 'https://ajiio.in/0wMfDLp'
-  }
+  },
 {
     id: 'hp_12',
     title: 'W Women Charcoal Grey & Golden Satin Finish Floral Print Straight Kurti',
