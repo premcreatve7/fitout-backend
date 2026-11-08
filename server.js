@@ -10,6 +10,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
+import INITIAL_CLOTHES from './catalogData.js';
 
 dotenv.config();
 
@@ -28,6 +29,19 @@ const JWT_SECRET = process.env.JWT_SECRET || "fitout_ai_auth_key_2026";
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || "fitout_webhook_2026";
+const ADMOB_PUB_ID = process.env.ADMOB_PUB_ID || "pub-XXXXXXXXXXXXXXXX";
+
+// ==========================================
+// 📢 0. ADMOB APP-ADS.TXT & HEALTH CHECK
+// ==========================================
+app.get('/', (req, res) => {
+  res.json({ status: 'active', service: 'FitOut AI Backend' });
+});
+
+app.get('/app-ads.txt', (req, res) => {
+  res.type('text/plain');
+  res.send(`google.com, ${ADMOB_PUB_ID}, DIRECT, f08c47fec0942fa0`);
+});
 
 // ==========================================
 // 💳 1. RAZORPAY INITIALIZATION
@@ -52,25 +66,23 @@ if (MONGO_URI) {
 }
 
 function getTodayString() {
-  return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+  return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
-// User Schema (Strict 1 Welcome Credit & DB-backed 24h Ad Tracking)
 const userSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true },
   name: { type: String, default: 'FitOut User' },
-  credits: { type: Number, default: 1 }, // ✅ Sirf 1 Free Welcome Credit
+  credits: { type: Number, default: 1 },
   has_claimed_welcome_credit: { type: Boolean, default: true },
-  last_ad_reward_date: { type: String, default: '' }, // ✅ 24 ghante me 1 baar DB level check
+  last_ad_reward_date: { type: String, default: '' },
   ads_watched_today: { type: Number, default: 0 },
-  processedTransactions: { type: [String], default: [] }, // ✅ Replay prevention
+  processedTransactions: { type: [String], default: [] },
   created_at: { type: Date, default: Date.now }
 });
 
 const User = mongoose.model('User', userSchema);
 
-// Catalog Schema
 const catalogSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
@@ -84,65 +96,73 @@ const catalogSchema = new mongoose.Schema({
 const Catalog = mongoose.model('Catalog', catalogSchema);
 
 // ==========================================
-// 👗 3. HANDPICKED CATALOG & SEEDING (RESTORED)
+// 👗 3. AUTO-SYNC CATALOG & FAST NO-HANG LOADER
 // ==========================================
-const INITIAL_CLOTHES = [
-  {
-    id: 'hp_01',
-    title: 'Yellow Floral Top',
-    category: 'tops',
-    tag: 'Trending',
-    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h73/ha5/16407570612254/-473Wx593H-461161841-yellow-MODEL.jpg',
-    affiliateUrl: 'https://ajiio.in/tFndB6q'
-  },
-  {
-    id: 'hp_02',
-    title: 'Casual Printed Wear',
-    category: 'tops',
-    tag: 'Hot',
-    imageUrl: 'https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/productimage/2019/9/10/956f6d80-09df-44b3-b881-d826bb3eaaae1568112535637-1.jpg',
-    affiliateUrl: 'https://myntr.it/oCgMAHo'
-  },
-  {
-    id: 'hp_03',
-    title: 'Yellow Kurti / Tunic',
-    category: 'tops',
-    tag: 'Popular',
-    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/20200731/AjbB/5f2320517cdb8ca2cf88859d/-473Wx593H-461343341-yellow-MODEL.jpg',
-    affiliateUrl: 'https://ajiio.in/iyyaADw'
-  },
-  {
-    id: 'hp_04',
-    title: 'Classic White Shirt / Top',
-    category: 'tops',
-    tag: 'Best Seller',
-    imageUrl: 'https://assets.ajio.com/medias/sys_master/root/h07/hfa/14565431836702/-473Wx593H-441016995-white-MODEL.jpg',
-    affiliateUrl: 'https://ajiio.in/x1YkKK0'
-  }
-];
-
 async function initCatalog() {
   try {
-    const count = await Catalog.countDocuments();
-    if (count === 0) {
-      await Catalog.insertMany(INITIAL_CLOTHES);
-      console.log('📦 Initial catalog seeded to MongoDB.');
-    }
+    if (!INITIAL_CLOTHES || !Array.isArray(INITIAL_CLOTHES) || INITIAL_CLOTHES.length === 0) return;
+
+    const bulkOps = INITIAL_CLOTHES.map((item) => ({
+      updateOne: {
+        filter: { id: item.id },
+        update: { $set: item },
+        upsert: true
+      }
+    }));
+
+    await Catalog.bulkWrite(bulkOps);
+    console.log(`📦 Catalog Synced: ${INITIAL_CLOTHES.length} items ready in MongoDB.`);
   } catch (e) {
-    console.error('Catalog seed error:', e);
+    console.error('Catalog sync error:', e);
   }
 }
 mongoose.connection.once('open', initCatalog);
 
+// Card display ke liye 25KB WebP Optimizer
+function optimizeCatalogImage(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.includes('wsrv.nl')) return url;
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&w=480&q=80&output=webp`;
+}
+
+// AI Try-On ke waqt wapas Original HD URL nikalne ka helper
+function extractOriginalImageUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.includes('wsrv.nl/?url=')) {
+    try {
+      const parsed = new URL(url);
+      const rawUrl = parsed.searchParams.get('url');
+      if (rawUrl) return decodeURIComponent(rawUrl);
+    } catch (e) {}
+  }
+  return url;
+}
+
 app.get('/api/handpicked-clothes', async (req, res) => {
   try {
-    let clothes = await Catalog.find().sort({ created_at: -1 });
+    let clothes = await Catalog.find().lean();
     if (!clothes || clothes.length === 0) {
       clothes = INITIAL_CLOTHES;
     }
-    res.json({ success: true, clothes });
+
+    const limit = Number(req.query.limit) || 35;
+    const shuffled = [...clothes]
+      .sort(() => 0.5 - Math.random())
+      .slice(0, limit)
+      .map(item => ({
+        ...item,
+        imageUrl: optimizeCatalogImage(item.imageUrl),
+        originalImageUrl: item.imageUrl
+      }));
+
+    res.json({ success: true, clothes: shuffled });
   } catch (err) {
-    res.json({ success: true, clothes: INITIAL_CLOTHES });
+    const fallback = [...INITIAL_CLOTHES].slice(0, 35).map(item => ({
+      ...item,
+      imageUrl: optimizeCatalogImage(item.imageUrl),
+      originalImageUrl: item.imageUrl
+    }));
+    res.json({ success: true, clothes: fallback });
   }
 });
 
@@ -194,7 +214,7 @@ app.post('/api/admin/add-cloth', async (req, res) => {
 });
 
 // ==========================================
-// 💳 4. RAZORPAY PAYMENT LINK & WEBHOOK
+// 💳 4. RAZORPAY PAYMENT LINK & SECURE WEBHOOK
 // ==========================================
 app.post('/api/payment/create-link', async (req, res) => {
   try {
@@ -213,7 +233,7 @@ app.post('/api/payment/create-link', async (req, res) => {
       amount: Math.round(Number(amount) * 100),
       currency: 'INR',
       accept_partial: false,
-      description: `${planId || 'credits'} - FitOut AI Try-On Credits`,
+      description: `${planId || 'credits'} FitOut AI Try-On Credits`,
       customer: customerData,
       notify: { sms: false, email: false },
       reminder_enable: false,
@@ -233,7 +253,7 @@ app.post('/api/payment/create-link', async (req, res) => {
   }
 });
 
-// 🚀 Razorpay Webhook (Direct Server-to-Server Credit Guarantee)
+// 🚀 Razorpay Webhook (HMAC-SHA256 Verified)
 app.post('/api/payment/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
@@ -258,7 +278,7 @@ app.post('/api/payment/webhook', async (req, res) => {
       const amount = (entity?.amount || 4900) / 100;
       const creditsToAdd = amount >= 99 ? 30 : 10;
 
-      if (userId) {
+      if (userId && paymentId) {
         let user = await User.findOne({ 
           $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
         });
@@ -267,7 +287,7 @@ app.post('/api/payment/webhook', async (req, res) => {
           if (!user.processedTransactions) user.processedTransactions = [];
           if (!user.processedTransactions.includes(paymentId)) {
             user.credits = (user.credits || 0) + creditsToAdd;
-            if (paymentId) user.processedTransactions.push(paymentId);
+            user.processedTransactions.push(paymentId);
             await user.save();
             console.log(`🚀 WEBHOOK SUCCESS: +${creditsToAdd} Credits added to ${user.phone}`);
           }
@@ -282,61 +302,68 @@ app.post('/api/payment/webhook', async (req, res) => {
   }
 });
 
-// Browser Return Callback
+// 🔒 Secure Browser Return Callback (Verifies Payment directly with Razorpay API)
 app.get('/api/payment/callback', async (req, res) => {
   try {
     const { userId, amount, razorpay_payment_id, razorpay_payment_link_status } = req.query;
-    const creditsToAdd = Number(amount) >= 99 ? 30 : 10;
 
-    if (razorpay_payment_link_status === 'paid' || razorpay_payment_id) {
-      let user = await User.findOne({ 
-        $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
-      });
+    if (razorpay_payment_link_status === 'paid' && razorpay_payment_id && razorpay) {
+      // Security Verification: Razorpay server se check karein ki payment asli hai ya nahi
+      const paymentDetails = await razorpay.payments.fetch(String(razorpay_payment_id));
+      const isPaid = paymentDetails && (paymentDetails.status === 'captured' || paymentDetails.status === 'authorized');
+      const paidAmountINR = (paymentDetails?.amount || Number(amount) * 100) / 100;
+      const creditsToAdd = paidAmountINR >= 99 ? 30 : 10;
 
-      if (user) {
-        if (!user.processedTransactions) user.processedTransactions = [];
-        if (!user.processedTransactions.includes(razorpay_payment_id)) {
-          user.credits = (user.credits || 0) + creditsToAdd;
-          if (razorpay_payment_id) user.processedTransactions.push(razorpay_payment_id);
-          await user.save();
-          console.log(`✅ Callback Success: +${creditsToAdd} Credits to ${user.phone}`);
+      if (isPaid && userId) {
+        let user = await User.findOne({ 
+          $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
+        });
+
+        if (user) {
+          if (!user.processedTransactions) user.processedTransactions = [];
+          if (!user.processedTransactions.includes(String(razorpay_payment_id))) {
+            user.credits = (user.credits || 0) + creditsToAdd;
+            user.processedTransactions.push(String(razorpay_payment_id));
+            await user.save();
+            console.log(`✅ Verified Callback Success: +${creditsToAdd} Credits to ${user.phone}`);
+          }
         }
-      }
 
-      return res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Payment Successful</title>
-          <style>
-            body { font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #FAF7F2; }
-            .card { background: white; border-radius: 24px; padding: 32px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); max-width: 360px; margin: 0 auto; }
-            .icon { width: 56px; height: 56px; background: #DCFCE7; color: #16A34A; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; margin: 0 auto 16px; font-weight: bold; }
-            h2 { color: #1E293B; margin: 0 0 8px; font-size: 20px; font-weight: 800; }
-            .badge { display: inline-block; background: #F3E8FF; color: #7E22CE; font-weight: 800; padding: 6px 14px; border-radius: 99px; margin: 12px 0; font-size: 13px; }
-            p { color: #64748B; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">✓</div>
-            <h2>Payment Successful!</h2>
-            <div class="badge">+${creditsToAdd} Credits Added</div>
-            <p>FitOut AI app me wapas jayein, credits update ho chuke hain.</p>
-          </div>
-        </body>
-        </html>
-      `);
-    } else {
-      return res.send("<h2>Payment Incomplete hai. Kripya app me wapas jayein.</h2>");
+        return res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Payment Successful</title>
+            <style>
+              body { font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #FAF7F2; }
+              .card { background: white; border-radius: 24px; padding: 32px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); max-width: 360px; margin: 0 auto; }
+              .icon { width: 56px; height: 56px; background: #DCFCE7; color: #16A34A; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; margin: 0 auto 16px; font-weight: bold; }
+              h2 { color: #1E293B; margin: 0 0 8px; font-size: 20px; font-weight: 800; }
+              .badge { display: inline-block; background: #F3E8FF; color: #7E22CE; font-weight: 800; padding: 6px 14px; border-radius: 99px; margin: 12px 0; font-size: 13px; }
+              p { color: #64748B; font-size: 14px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="icon">✓</div>
+              <h2>Payment Successful!</h2>
+              <div class="badge">+${creditsToAdd} Credits Added</div>
+              <p>FitOut AI app me wapas jayein, credits update ho chuke hain.</p>
+            </div>
+          </body>
+          </html>
+        `);
+      }
     }
+
+    return res.send("<h2>Payment Verification Pending ya Incomplete hai. Kripya app me wapas jayein.</h2>");
   } catch (error) {
-    return res.status(500).send("Internal Server Error");
+    console.error("Callback verification error:", error.message);
+    return res.status(500).send("Payment Verification Failed");
   }
 });
 
-// Fallback Standard Razorpay Order API
 app.post('/api/payment/create-order', async (req, res) => {
   try {
     if (!razorpay) return res.status(500).json({ success: false, message: 'Razorpay keys missing.' });
@@ -354,25 +381,27 @@ app.post('/api/payment/create-order', async (req, res) => {
 });
 
 // ==========================================
-// 👤 5. AUTHENTICATION & PROFILE APIS
+// 👤 5. AUTHENTICATION & PROFILE APIS (SECURED)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { phone, password, name } = req.body;
-    if (!phone || !password) return res.status(400).json({ success: false, message: 'Details missing hain' });
+    if (!phone || !password || String(password).trim().length < 4) {
+      return res.status(400).json({ success: false, message: 'Valid Phone aur kam se kam 4 akshar ka Password zaroori hai.' });
+    }
 
-    const cleanPhone = phone.trim();
+    const cleanPhone = String(phone).trim();
     const existing = await User.findOne({ phone: cleanPhone });
     if (existing) {
       return res.status(400).json({ success: false, message: 'Yeh number pehle se registered hai! Kripya Sign In karein.' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(String(password), 10);
     const newUser = new User({
       phone: cleanPhone,
       password: hashedPassword,
       name: name?.trim() || `User_${cleanPhone.slice(-4)}`,
-      credits: 1, // ✅ Har naye number ko sirf 1 Free Credit
+      credits: 1,
       has_claimed_welcome_credit: true,
       ads_watched_today: 0,
       last_ad_reward_date: ''
@@ -395,19 +424,23 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, identifier, password } = req.body;
-    const userPhone = (phone || identifier || '').trim();
+    const userPhone = String(phone || identifier || '').trim();
+
+    // 🔒 Security Fix: Password mandatory check
+    if (!userPhone || !password) {
+      return res.status(400).json({ success: false, message: 'Phone number aur Password dono zaroori hain!' });
+    }
 
     const user = await User.findOne({ phone: userPhone });
     if (!user) {
       return res.status(404).json({ success: false, message: 'Yeh number registered nahi hai. Pehle Sign Up karein.' });
     }
 
-    if (password) {
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) return res.status(401).json({ success: false, message: 'Galat password!' });
+    const isMatch = await bcrypt.compare(String(password), user.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: 'Galat password!' });
     }
 
-    // Daily reset hata diya gaya hai - Database me jo original balance hai wahi aayega
     const token = jwt.sign({ id: user._id, phone: user.phone }, JWT_SECRET, { expiresIn: '60d' });
     return res.json({
       success: true,
@@ -422,6 +455,8 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/user/profile', async (req, res) => {
   try {
     const userId = req.query.userId || req.headers['x-user-id'];
+    if (!userId) return res.status(400).json({ success: false, error: "User ID required" });
+
     let user = await User.findOne({ 
       $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
     });
@@ -446,12 +481,26 @@ app.get('/api/user/profile', async (req, res) => {
 
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
-    const { phone, newPassword } = req.body;
-    const user = await User.findOne({ phone: phone?.trim() });
+    const { phone, oldPassword, newPassword, adminSecret } = req.body;
+    if (!phone || !newPassword) return res.status(400).json({ success: false, message: 'Details adhuri hain' });
+
+    const user = await User.findOne({ phone: String(phone).trim() });
     if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
-    user.password = await bcrypt.hash(newPassword, 10);
+
+    // 🔒 Security Fix: Ya toh purana password sahi ho ya Admin Secret ho
+    if (adminSecret !== ADMIN_SECRET_KEY) {
+      if (!oldPassword) {
+        return res.status(403).json({ success: false, message: 'Security ke liye purana password ya support verification zaroori hai.' });
+      }
+      const isOldValid = await bcrypt.compare(String(oldPassword), user.password);
+      if (!isOldValid) {
+        return res.status(401).json({ success: false, message: 'Purana password galat hai!' });
+      }
+    }
+
+    user.password = await bcrypt.hash(String(newPassword), 10);
     await user.save();
-    return res.json({ success: true, message: 'Password badal diya gaya hai.' });
+    return res.json({ success: true, message: 'Password safaltapurvak badal diya gaya hai.' });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Password reset error' });
   }
@@ -463,6 +512,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
 app.post('/api/user/reward-ad', async (req, res) => {
   try {
     const { userId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, message: 'User ID missing' });
+
     let user = await User.findOne({ 
       $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
     });
@@ -507,7 +558,7 @@ app.post('/api/user/reward-ad', async (req, res) => {
 });
 
 // ==========================================
-// 🛍️ 7. E-COMMERCE SCRAPER (RESTORED)
+// 🛍️ 7. E-COMMERCE SCRAPER
 // ==========================================
 app.post('/api/extract-image', async (req, res) => {
   let { url } = req.body;
@@ -608,7 +659,7 @@ app.post('/api/extract-image', async (req, res) => {
 });
 
 // ==========================================
-// 👗 8. UNIVERSAL CATEGORY & TRY-ON PIPELINE (SAFE DEDUCTION)
+// 👗 8. UNIVERSAL CATEGORY & TRY-ON PIPELINE
 // ==========================================
 function detectGarmentCategory(urlOrText) {
   if (!urlOrText || typeof urlOrText !== 'string' || !urlOrText.trim()) return null;
@@ -651,8 +702,10 @@ async function convertOutputToBase64(rawOutput) {
 
 function prepareGradioFile(input) {
   if (typeof input === 'string') {
-    if (input.startsWith('http')) return handle_file(input);
-    const clean = input.includes(';base64,') ? input.split(';base64,')[1] : input;
+    // AI ko hamesha Original High-Res photo bhejein
+    const cleanInput = extractOriginalImageUrl(input);
+    if (cleanInput.startsWith('http')) return handle_file(cleanInput);
+    const clean = cleanInput.includes(';base64,') ? cleanInput.split(';base64,')[1] : cleanInput;
     return handle_file(Buffer.from(clean, 'base64'));
   }
   return handle_file(input);
@@ -703,7 +756,6 @@ app.post('/api/tryon', async (req, res) => {
       throw new Error("AI output generate nahi ho paya. Credit safe hai.");
     }
 
-    // ✅ Generation pass hone par hi credit deduct hoga
     user.credits = Math.max(0, user.credits - 1);
     await user.save();
     console.log(`✨ AI TryOn Success! 1 Credit Deducted. Remaining: ${user.credits} for ${user.phone}`);
