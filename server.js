@@ -74,9 +74,10 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   name: { type: String, default: 'FitOut User' },
   credits: { type: Number, default: 1 },
+  usedCredits: { type: Number, default: 0 },
   has_claimed_welcome_credit: { type: Boolean, default: true },
-  last_ad_reward_date: { type: String, default: '' },
-  ads_watched_today: { type: Number, default: 0 },
+  lastAdDate: { type: String, default: '' },
+  dailyAdsWatched: { type: Number, default: 0 },
   processedTransactions: { type: [String], default: [] },
   created_at: { type: Date, default: Date.now }
 });
@@ -118,14 +119,12 @@ async function initCatalog() {
 }
 mongoose.connection.once('open', initCatalog);
 
-// Card display ke liye 25KB WebP Optimizer
 function optimizeCatalogImage(url) {
   if (!url || typeof url !== 'string') return url;
   if (url.includes('wsrv.nl')) return url;
   return `https://wsrv.nl/?url=${encodeURIComponent(url)}&w=480&q=80&output=webp`;
 }
 
-// AI Try-On ke waqt wapas Original HD URL nikalne ka helper
 function extractOriginalImageUrl(url) {
   if (!url || typeof url !== 'string') return url;
   if (url.includes('wsrv.nl/?url=')) {
@@ -253,7 +252,6 @@ app.post('/api/payment/create-link', async (req, res) => {
   }
 });
 
-// 🚀 Razorpay Webhook (HMAC-SHA256 Verified)
 app.post('/api/payment/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
@@ -302,13 +300,11 @@ app.post('/api/payment/webhook', async (req, res) => {
   }
 });
 
-// 🔒 Secure Browser Return Callback (Verifies Payment directly with Razorpay API)
 app.get('/api/payment/callback', async (req, res) => {
   try {
     const { userId, amount, razorpay_payment_id, razorpay_payment_link_status } = req.query;
 
     if (razorpay_payment_link_status === 'paid' && razorpay_payment_id && razorpay) {
-      // Security Verification: Razorpay server se check karein ki payment asli hai ya nahi
       const paymentDetails = await razorpay.payments.fetch(String(razorpay_payment_id));
       const isPaid = paymentDetails && (paymentDetails.status === 'captured' || paymentDetails.status === 'authorized');
       const paidAmountINR = (paymentDetails?.amount || Number(amount) * 100) / 100;
@@ -402,9 +398,10 @@ app.post('/api/auth/register', async (req, res) => {
       password: hashedPassword,
       name: name?.trim() || `User_${cleanPhone.slice(-4)}`,
       credits: 1,
+      usedCredits: 0,
       has_claimed_welcome_credit: true,
-      ads_watched_today: 0,
-      last_ad_reward_date: ''
+      dailyAdsWatched: 0,
+      lastAdDate: ''
     });
 
     await newUser.save();
@@ -414,7 +411,13 @@ app.post('/api/auth/register', async (req, res) => {
       success: true,
       message: 'Aapko 1 Free Try-On Credit mil gaya hai!',
       token,
-      user: { id: newUser._id, phone: newUser.phone, name: newUser.name, credits: newUser.credits }
+      user: { 
+        id: newUser._id, 
+        phone: newUser.phone, 
+        name: newUser.name, 
+        credits: newUser.credits,
+        usedCredits: newUser.usedCredits
+      }
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Registration error' });
@@ -426,7 +429,6 @@ app.post('/api/auth/login', async (req, res) => {
     const { phone, identifier, password } = req.body;
     const userPhone = String(phone || identifier || '').trim();
 
-    // 🔒 Security Fix: Password mandatory check
     if (!userPhone || !password) {
       return res.status(400).json({ success: false, message: 'Phone number aur Password dono zaroori hain!' });
     }
@@ -445,7 +447,13 @@ app.post('/api/auth/login', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user._id, phone: user.phone, name: user.name, credits: user.credits }
+      user: { 
+        id: user._id, 
+        phone: user.phone, 
+        name: user.name, 
+        credits: user.credits,
+        usedCredits: user.usedCredits || 0
+      }
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Login error' });
@@ -463,6 +471,9 @@ app.get('/api/user/profile', async (req, res) => {
 
     if (!user) return res.status(404).json({ success: false, error: "User nahi mila" });
 
+    const today = getTodayString();
+    const currentDailyAds = user.lastAdDate === today ? (user.dailyAdsWatched || 0) : 0;
+
     return res.json({
       success: true,
       user: {
@@ -470,8 +481,10 @@ app.get('/api/user/profile', async (req, res) => {
         phone: user.phone,
         name: user.name,
         credits: user.credits,
-        adsWatched: user.last_ad_reward_date === getTodayString() ? 3 : (user.ads_watched_today || 0),
-        canWatchAd: user.last_ad_reward_date !== getTodayString()
+        usedCredits: user.usedCredits || 0,
+        dailyAdsWatched: currentDailyAds,
+        lastAdDate: user.lastAdDate || '',
+        canWatchAd: currentDailyAds < 9
       }
     });
   } catch (err) {
@@ -487,7 +500,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
     const user = await User.findOne({ phone: String(phone).trim() });
     if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
 
-    // 🔒 Security Fix: Ya toh purana password sahi ho ya Admin Secret ho
     if (adminSecret !== ADMIN_SECRET_KEY) {
       if (!oldPassword) {
         return res.status(403).json({ success: false, message: 'Security ke liye purana password ya support verification zaroori hai.' });
@@ -507,53 +519,61 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ==========================================
-// 📺 6. 24-HOUR AD REWARD API (DB-Backed)
+// 📺 6. REWARDED AD API (3 Ads = 1 Credit, Max 9 Ads / 3 Credits Daily)
 // ==========================================
 app.post('/api/user/reward-ad', async (req, res) => {
   try {
     const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: 'User ID missing' });
+    if (!userId) return res.status(400).json({ success: false, message: 'User ID missing hai.' });
 
     let user = await User.findOne({ 
       $or: [{ phone: String(userId).trim() }, { _id: mongoose.isValidObjectId(userId) ? userId : null }] 
     });
 
-    if (!user) return res.status(404).json({ success: false, message: 'User nahi mila' });
+    if (!user) return res.status(404).json({ success: false, message: 'User nahi mila.' });
 
     const today = getTodayString();
 
-    if (user.last_ad_reward_date === today) {
+    // Naya din shuru hone par daily ad counter 0 se reset karein
+    if (user.lastAdDate !== today) {
+      user.dailyAdsWatched = 0;
+      user.lastAdDate = today;
+    }
+
+    // Daily maximum 9 ads (= 3 credits) check
+    if ((user.dailyAdsWatched || 0) >= 9) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Aapne aaj ka free ad credit claim kar liya hai. Agle 24 ghante baad dubara try karein!' 
+        message: 'Daily limit reached! You have already watched 9 ads (3 credits) today. Try again tomorrow.' 
       });
     }
 
-    user.ads_watched_today = (user.ads_watched_today || 0) + 1;
+    // Ad count +1 karein
+    user.dailyAdsWatched = (user.dailyAdsWatched || 0) + 1;
 
-    if (user.ads_watched_today >= 3) {
+    // Har 3rd ad par (3, 6, 9) +1 credit add karein
+    let creditEarned = 0;
+    if (user.dailyAdsWatched % 3 === 0) {
       user.credits = (user.credits || 0) + 1;
-      user.last_ad_reward_date = today;
-      user.ads_watched_today = 0;
-      await user.save();
-
-      return res.json({
-        success: true,
-        completed: true,
-        credits: user.credits,
-        message: '🎉 3 Ads pure hue! +1 Credit jud gaya hai.'
-      });
-    } else {
-      await user.save();
-      return res.json({
-        success: true,
-        completed: false,
-        adsWatched: user.ads_watched_today,
-        message: `📺 Ad ${user.ads_watched_today}/3 dekha gaya!`
-      });
+      creditEarned = 1;
     }
+
+    await user.save();
+    console.log(`📺 Ad Watched (${user.dailyAdsWatched}/9) | Credits: ${user.credits} | User: ${user.phone}`);
+
+    return res.json({
+      success: true,
+      dailyAdsWatched: user.dailyAdsWatched,
+      credits: user.credits,
+      usedCredits: user.usedCredits || 0,
+      creditEarned,
+      message: creditEarned > 0 
+        ? `🎉 +1 Credit Added! (${user.dailyAdsWatched}/9 ads today)` 
+        : `📺 Ad ${user.dailyAdsWatched % 3}/3 watched!`
+    });
   } catch (err) {
-    return res.status(500).json({ success: false, message: 'Ad reward error' });
+    console.error("Reward Ad Error:", err.message);
+    return res.status(500).json({ success: false, message: 'Ad reward update karne me error aaya.' });
   }
 });
 
@@ -702,7 +722,6 @@ async function convertOutputToBase64(rawOutput) {
 
 function prepareGradioFile(input) {
   if (typeof input === 'string') {
-    // AI ko hamesha Original High-Res photo bhejein
     const cleanInput = extractOriginalImageUrl(input);
     if (cleanInput.startsWith('http')) return handle_file(cleanInput);
     const clean = cleanInput.includes(';base64,') ? cleanInput.split(';base64,')[1] : cleanInput;
@@ -756,15 +775,18 @@ app.post('/api/tryon', async (req, res) => {
       throw new Error("AI output generate nahi ho paya. Credit safe hai.");
     }
 
-    user.credits = Math.max(0, user.credits - 1);
+    // Credit deduct aur usedCredits update karein
+    user.credits = Math.max(0, (user.credits || 0) - 1);
+    user.usedCredits = (user.usedCredits || 0) + 1;
     await user.save();
-    console.log(`✨ AI TryOn Success! 1 Credit Deducted. Remaining: ${user.credits} for ${user.phone}`);
+    console.log(`✨ AI TryOn Success! 1 Credit Deducted. Remaining: ${user.credits}, Used: ${user.usedCredits} for ${user.phone}`);
 
     return res.json({
       success: true,
       resultImageUrl: finalResultUrl,
       appliedCategory: finalCategory,
-      remainingCredits: user.credits
+      remainingCredits: user.credits,
+      usedCredits: user.usedCredits
     });
 
   } catch (error) {
